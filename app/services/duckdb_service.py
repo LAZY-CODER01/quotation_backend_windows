@@ -48,9 +48,8 @@ class DuckDBService:
                 self.connection = None
 
     def create_table(self):
-        """Create necessary tables (Emails + Auth Tokens)."""
         try:
-            # 1. Create Email Extractions Table
+            # 1. Base table creation
             self.connection.execute("""
                 CREATE SEQUENCE IF NOT EXISTS id_sequence START 1;
                 CREATE TABLE IF NOT EXISTS email_extractions (
@@ -62,11 +61,20 @@ class DuckDBService:
                     body_text TEXT,
                     extraction_result JSON,
                     extraction_status VARCHAR,
+                    updated_at TIMESTAMP,  -- ✅ Ensure this exists
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
 
-            # 2. ✅ Create User Tokens Table (Fixes logout on deploy)
+            # 2. ✅ Auto-Fix: Add updated_at if it was missing from an old version
+            try:
+                # We try to select the column. If it fails, we add it.
+                self.connection.execute("SELECT updated_at FROM email_extractions LIMIT 1")
+            except:
+                logger.info("🛠️ Column 'updated_at' missing. Adding it now...")
+                self.connection.execute("ALTER TABLE email_extractions ADD COLUMN updated_at TIMESTAMP")
+
+            # 3. User Tokens Table
             self.connection.execute("""
                 CREATE TABLE IF NOT EXISTS user_tokens (
                     user_id VARCHAR PRIMARY KEY,
@@ -75,44 +83,68 @@ class DuckDBService:
                 );
             """)
             
-            logger.info("✅ Database tables initialized (Emails + Tokens)")
+            logger.info("✅ Database tables initialized")
             return True
         except Exception as e:
             logger.error(f"❌ Table creation error: {str(e)}")
             return False
-
     # --- Email Methods ---
-    def add_extraction(self, data):
+    def insert_extraction(self, email_data, extraction_result):
+        """
+        Insert or Update extraction.
+        Fixes 'CURRENT_TIMESTAMP' error by passing time from Python.
+        """
         try:
-            # Convert dicts to JSON strings for storage
-            extraction_result_json = json.dumps(data.get('extraction_result', {}))
+            import json
+            from datetime import datetime
             
+            # 1. Prepare data
+            extraction_result_json = json.dumps(extraction_result)
+            status = extraction_result.get('status', 'VALID')
+            current_time = datetime.now()  # ✅ Calc time here
+            
+            # 2. Query - Note we pass updated_at into the INSERT
+            # and use EXCLUDED.updated_at for the UPDATE.
             query = """
                 INSERT INTO email_extractions (
                     gmail_id, sender, received_at, subject, body_text, 
-                    extraction_result, extraction_status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    extraction_result, extraction_status, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (gmail_id) DO UPDATE SET
                     extraction_result = EXCLUDED.extraction_result,
                     extraction_status = EXCLUDED.extraction_status,
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at = EXCLUDED.updated_at
+                RETURNING id
             """
             
-            self.connection.execute(query, [
-                data['gmail_id'],
-                data.get('sender', ''),
-                data.get('received_at'),
-                data.get('subject', ''),
-                data.get('body_text', ''),
+            # 3. Execute - Pass current_time as the last argument
+            result = self.connection.execute(query, [
+                email_data.get('gmail_id'),
+                email_data.get('sender', ''),
+                email_data.get('received_at'),
+                email_data.get('subject', ''),
+                email_data.get('body_text', ''),
                 extraction_result_json,
-                data.get('extraction_status', 'PENDING')
-            ])
+                status,
+                current_time  # ✅ Passing Python datetime
+            ]).fetchone()
+            
             self.connection.commit()
-            return True
-        except Exception as e:
-            logger.error(f"Error adding extraction: {str(e)}")
-            return False
+            return result[0] if result else True
 
+        except Exception as e:
+            # Handle case where column might still be missing
+            if 'updated_at' in str(e) or 'Binder Error' in str(e):
+                logger.warning("Attempting to fix missing column 'updated_at'...")
+                try:
+                    self.connection.execute("ALTER TABLE email_extractions ADD COLUMN updated_at TIMESTAMP")
+                    # Retry the insert recursively once
+                    return self.insert_extraction(email_data, extraction_result)
+                except:
+                    pass
+            
+            logger.error(f"Error inserting extraction: {str(e)}")
+            return False
     def get_all_extractions(self, limit=100):
         try:
             result = self.connection.execute(
@@ -179,30 +211,61 @@ class DuckDBService:
     def save_user_token(self, user_id, token_json_str):
         """Saves or updates a user's Google OAuth token in the DB."""
         try:
-            self.connection.execute("""
+            logger.info(f"Saving token for user_id: {user_id}, token_json length: {len(token_json_str) if token_json_str else 0}")
+            
+            # Use explicit timestamp for better compatibility with MotherDuck
+            from datetime import datetime
+            current_timestamp = datetime.now()
+            
+            query = """
                 INSERT INTO user_tokens (user_id, token_json, updated_at)
-                VALUES (?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?)
                 ON CONFLICT (user_id) DO UPDATE SET
                     token_json = EXCLUDED.token_json,
-                    updated_at = CURRENT_TIMESTAMP
-            """, [user_id, token_json_str])
+                    updated_at = EXCLUDED.updated_at
+            """
+            
+            logger.debug(f"Executing query with user_id={user_id}, timestamp={current_timestamp}")
+            self.connection.execute(query, [user_id, token_json_str, current_timestamp])
             self.connection.commit()
+            
+            logger.info(f"✅ Token saved successfully for user_id: {user_id}")
+            
+            # Verify the save
+            verify_result = self.connection.execute(
+                "SELECT user_id FROM user_tokens WHERE user_id = ?", 
+                [user_id]
+            ).fetchone()
+            
+            if verify_result:
+                logger.info(f"✅ Verified: Token exists in database for user_id: {user_id}")
+            else:
+                logger.warning(f"⚠️ Warning: Token save committed but not found on verification for user_id: {user_id}")
+            
             return True
         except Exception as e:
-            logger.error(f"Error saving user token: {str(e)}")
+            logger.error(f"❌ Error saving user token for user_id {user_id}: {str(e)}", exc_info=True)
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return False
 
     def get_user_token(self, user_id):
         """Retrieves a user's Google OAuth token from the DB."""
         try:
+            logger.info(f"Querying user_tokens for user_id: {user_id}")
             result = self.connection.execute("""
                 SELECT token_json FROM user_tokens WHERE user_id = ?
             """, [user_id]).fetchone()
             
-            # result[0] is the JSON string
-            return result[0] if result else None
+            if result:
+                token_json = result[0]
+                logger.info(f"✅ Token found for user_id: {user_id} (length: {len(token_json) if token_json else 0})")
+                return token_json
+            else:
+                logger.warning(f"⚠️ No token found for user_id: {user_id}")
+                return None
         except Exception as e:
-            logger.error(f"Error retrieving user token: {str(e)}")
+            logger.error(f"❌ Error retrieving user token for user_id {user_id}: {str(e)}", exc_info=True)
             return None
 
     def delete_user_token(self, user_id):

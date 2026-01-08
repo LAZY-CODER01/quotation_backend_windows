@@ -113,6 +113,7 @@ def create_flask_app():
                 })
             
             # Check for token in database instead of file system
+            logger.info(f"Checking database for token for user_id: {user_id}")
             db = DuckDBService()
             if not db.connect():
                 logger.error("Failed to connect to database")
@@ -125,9 +126,11 @@ def create_flask_app():
             db.create_table()
             
             # Get token from database
+            logger.info(f"Querying user_tokens table for user_id: {user_id}")
             token_json_str = db.get_user_token(user_id)
             
             if token_json_str:
+                logger.info(f"✅ Token found in database for user_id: {user_id} (length: {len(token_json_str)})")
                 # Token exists in database, check if valid
                 from google.oauth2.credentials import Credentials
                 try:
@@ -175,10 +178,22 @@ def create_flask_app():
                         'message': 'Invalid credentials'
                     })
             
+            logger.warning(f"⚠️ No token found in database for user_id: {user_id}")
+            
+            # Debug: Check if any tokens exist at all
+            try:
+                all_users = db.connection.execute("SELECT user_id FROM user_tokens").fetchall()
+                logger.info(f"Debug: Found {len(all_users)} total user(s) in user_tokens table")
+                if all_users:
+                    logger.info(f"Debug: Existing user_ids: {[u[0] for u in all_users]}")
+            except Exception as e:
+                logger.error(f"Error checking all users: {str(e)}")
+            
             db.disconnect()
             return jsonify({
                 'authenticated': False,
-                'message': 'No authentication token found'
+                'message': 'No authentication token found',
+                'user_id': user_id
             })
             
         except Exception as e:
@@ -325,8 +340,13 @@ def create_flask_app():
             )
 
             # Pass user_id to authenticate_from_code so it can save token to DB
-            if gmail_service.authenticate_from_code(code, Config.OAUTH_REDIRECT_URI, user_id=user_id):
+            logger.info(f"Calling authenticate_from_code with user_id={user_id}, code={'present' if code else 'missing'}")
+            auth_result = gmail_service.authenticate_from_code(code, Config.OAUTH_REDIRECT_URI, user_id=user_id)
+            logger.info(f"authenticate_from_code returned: {auth_result}")
+            
+            if auth_result:
                 gmail_services[user_id] = gmail_service
+                logger.info(f"Gmail service stored for user {user_id}")
 
                 if not monitoring_active.get(user_id):
                     thread = threading.Thread(
@@ -334,11 +354,14 @@ def create_flask_app():
                     )
                     thread.start()
                     monitoring_active[user_id] = True
+                    logger.info(f"Monitoring thread started for user {user_id}")
 
                 session.pop("oauth_state", None)
+                logger.info(f"✅ Authentication successful, redirecting to dashboard for user {user_id}")
                 return redirect(f"{Config.FRONTEND_URL}/dashboard")
 
             else:
+                logger.error(f"❌ Authentication failed for user {user_id}")
                 return redirect(f"{Config.FRONTEND_URL}/?error=auth_failed")
 
         except Exception as e:
@@ -770,85 +793,172 @@ def initialize_database():
         logging.error(f"Database initialization error: {str(e)}")
 
 def check_and_start_monitoring_for_existing_users():
-    """Check for existing user tokens and start monitoring for each."""
+    """
+    Recover active sessions from MotherDuck database on startup.
+    This ensures email monitoring resumes after Render restarts.
+    
+    This function replaces the old file-based token recovery logic,
+    which doesn't work on Render's ephemeral filesystem.
+    """
+    restored_count = 0
+    failed_count = 0
+    
     try:
-        token_dir = Config.GMAIL_TOKEN_DIRECTORY
+        print("🔍 Checking MotherDuck database for active user sessions...")
+        logger.info("Starting session recovery from database")
         
-        if not os.path.exists(token_dir):
-            print("� No token directory found. Users need to login via frontend.")
+        # Connect to database
+        db = DuckDBService()
+        if not db.connect():
+            print("⚠️ Could not connect to database to restore sessions")
+            logger.error("Failed to connect to database for session recovery")
             return
-        
-        # Find all token files
-        token_files = [f for f in os.listdir(token_dir) if f.startswith('token_') and f.endswith('.json')]
-        
-        if not token_files:
-            print("💡 No authentication tokens found. Users need to login via frontend.")
-            return
-        
-        print(f"🔍 Found {len(token_files)} existing user token(s)...")
-        
-        from google.oauth2.credentials import Credentials
-        from google.auth.transport.requests import Request
-        
-        SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 
-                  'https://www.googleapis.com/auth/gmail.modify']
-        
-        for token_file in token_files:
+
+        try:
+            # Ensure table exists (in case it's a fresh run)
+            db.create_table()
+
+            # Fetch all users who have tokens
             try:
-                # Extract user_id from filename (token_USER_ID.json)
-                user_id = token_file.replace('token_', '').replace('.json', '')
-                token_path = os.path.join(token_dir, token_file)
-                
-                creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-                
-                # Refresh if expired
-                if creds and creds.expired and creds.refresh_token:
-                    print(f"🔄 Refreshing token for user {user_id[:8]}...")
-                    try:
-                        creds.refresh(Request())
-                        with open(token_path, 'w') as token:
-                            token.write(creds.to_json())
-                        print(f"✅ Token refreshed for user {user_id[:8]}")
-                    except Exception as e:
-                        print(f"⚠️ Failed to refresh token for user {user_id[:8]}: {str(e)}")
-                        continue
-                
-                if creds and creds.valid:
-                    # Create Gmail service for this user
-                    gmail_service = GmailService(
-                        credentials_path=Config.GMAIL_CREDENTIALS_FILE,
-                        token_path=token_path
-                    )
-                    gmail_service.credentials = creds
-                    gmail_service.service = gmail_service._build_service()
-                    
-                    # Store service instance
-                    gmail_services[user_id] = gmail_service
-                    
-                    # Start monitoring in background
-                    monitoring_thread = threading.Thread(
-                        target=start_monitoring_loop,
-                        args=(gmail_service,),
-                        daemon=True
-                    )
-                    monitoring_thread.start()
-                    monitoring_active[user_id] = True
-                    
-                    print(f"✅ Email monitoring active for user {user_id[:8]}")
-                else:
-                    print(f"⚠️ Invalid token for user {user_id[:8]}")
-                    
+                users = db.connection.execute("SELECT user_id, token_json FROM user_tokens").fetchall()
             except Exception as e:
-                print(f"⚠️ Error processing token {token_file}: {str(e)}")
-                continue
-        
-        active_count = len([v for v in monitoring_active.values() if v])
-        if active_count > 0:
-            print(f"� Email monitoring active for {active_count} user(s)")
+                logger.error(f"Error querying user_tokens table: {str(e)}")
+                print(f"⚠️ Error querying user_tokens: {str(e)}")
+                db.disconnect()
+                return
+
+            if not users:
+                print("💡 No active users found in database. Users need to login via frontend.")
+                logger.info("No user tokens found in database")
+                db.disconnect()
+                return
+
+            print(f"🔄 Found {len(users)} user(s) in database. Restoring sessions...")
+            logger.info(f"Found {len(users)} user(s) to restore from database")
+            
+            from google.oauth2.credentials import Credentials
+            from google.auth.transport.requests import Request
+            import json
+
+            SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 
+                      'https://www.googleapis.com/auth/gmail.modify']
+
+            # Iterate through each user and restore their session
+            for user_row in users:
+                user_id = user_row[0]
+                token_json = user_row[1]
+                
+                if not user_id or not token_json:
+                    logger.warning(f"Skipping invalid user record: user_id={user_id}, has_token={bool(token_json)}")
+                    failed_count += 1
+                    continue
+                
+                try:
+                    # Parse token JSON string into dictionary
+                    try:
+                        token_info = json.loads(token_json)
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Invalid JSON for user {user_id[:8]}: {str(e)}")
+                        print(f"⚠️ Invalid token JSON for user {user_id[:8]}, skipping...")
+                        failed_count += 1
+                        continue
+                    
+                    # Create credentials object from token info
+                    creds = Credentials.from_authorized_user_info(token_info, SCOPES)
+
+                    # Refresh token if expired
+                    if creds and creds.expired and creds.refresh_token:
+                        print(f"🔄 Refreshing expired token for user {user_id[:8]}...")
+                        logger.info(f"Refreshing token for user {user_id[:8]}")
+                        try:
+                            creds.refresh(Request())
+                            # Save refreshed token back to database
+                            refreshed_token_json = creds.to_json()
+                            if db.save_user_token(user_id, refreshed_token_json):
+                                print(f"✅ Token refreshed and saved for user {user_id[:8]}")
+                                logger.info(f"Token refreshed and saved for user {user_id[:8]}")
+                            else:
+                                logger.warning(f"Token refreshed but failed to save for user {user_id[:8]}")
+                                print(f"⚠️ Token refreshed but failed to save for user {user_id[:8]}")
+                        except Exception as e:
+                            logger.error(f"Failed to refresh token for user {user_id[:8]}: {str(e)}")
+                            print(f"⚠️ Failed to refresh token for user {user_id[:8]}: {str(e)}")
+                            # Skip this user if refresh fails
+                            failed_count += 1
+                            continue
+
+                    # Validate credentials before proceeding
+                    if not creds or not creds.valid:
+                        logger.warning(f"Invalid credentials for user {user_id[:8]}")
+                        print(f"⚠️ Invalid credentials for user {user_id[:8]}, skipping...")
+                        failed_count += 1
+                        continue
+
+                    # Initialize Gmail service without file path (cloud-ready)
+                    try:
+                        gmail_service = GmailService(
+                            credentials_path=Config.GMAIL_CREDENTIALS_FILE,
+                            token_path=None  # No file path needed, using DB storage
+                        )
+                        gmail_service.credentials = creds
+                        gmail_service.service = gmail_service._build_service()
+
+                        if not gmail_service.service:
+                            logger.error(f"Failed to build Gmail service for user {user_id[:8]}")
+                            print(f"⚠️ Failed to build service for user {user_id[:8]}")
+                            failed_count += 1
+                            continue
+
+                        # Store service instance globally
+                        gmail_services[user_id] = gmail_service
+                        
+                        # Start monitoring thread if not already active
+                        if not monitoring_active.get(user_id):
+                            thread = threading.Thread(
+                                target=start_monitoring_loop,
+                                args=(gmail_service,),
+                                daemon=True
+                            )
+                            thread.start()
+                            monitoring_active[user_id] = True
+                            restored_count += 1
+                            print(f"✅ Resumed monitoring for user {user_id[:8]}")
+                            logger.info(f"Successfully restored monitoring for user {user_id[:8]}")
+                        else:
+                            logger.info(f"Monitoring already active for user {user_id[:8]}")
+                            
+                    except Exception as e:
+                        logger.error(f"Error initializing Gmail service for user {user_id[:8]}: {str(e)}")
+                        print(f"❌ Error initializing service for user {user_id[:8]}: {str(e)}")
+                        failed_count += 1
+                        continue
+                        
+                except Exception as e:
+                    logger.error(f"Error restoring user {user_id[:8]}: {str(e)}", exc_info=True)
+                    print(f"❌ Error restoring user {user_id[:8]}: {str(e)}")
+                    failed_count += 1
+                    continue
+
+        finally:
+            # Always disconnect from database
+            db.disconnect()
+
+        # Summary logging
+        total_users = len(users) if 'users' in locals() else 0
+        if restored_count > 0:
+            print(f"✅ Successfully restored {restored_count} of {total_users} user session(s)")
+            logger.info(f"Session recovery complete: {restored_count} restored, {failed_count} failed out of {total_users} total")
+        elif failed_count > 0:
+            print(f"⚠️ Failed to restore {failed_count} user session(s)")
+            logger.warning(f"Session recovery had failures: {failed_count} failed out of {total_users} total")
+        else:
+            logger.info("Session recovery completed with no users to restore")
         
     except Exception as e:
-        logging.error(f"Error checking authentication: {str(e)}")
-        print(f"⚠️ Error checking for existing tokens: {str(e)}")
+        logger.error(f"Critical error during session recovery: {str(e)}", exc_info=True)
+        print(f"❌ Critical error restoring sessions: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
 
 
 # 🔥 Gunicorn entry point (MUST be global)

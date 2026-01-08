@@ -188,32 +188,51 @@ class GmailService:
             # Save the credentials to database instead of file
             if user_id:
                 try:
+                    logger.info(f"Attempting to save token to database for user_id: {user_id}")
                     # Import here to avoid circular imports
                     from app.services.duckdb_service import DuckDBService
                     
                     db = DuckDBService()
+                    logger.info(f"Database service created, connecting...")
                     if not db.connect():
                         logger.error("Failed to connect to database for token storage")
                         return False
+                    logger.info("Database connected successfully")
                     
                     # Ensure table exists
-                    db.create_table()
+                    logger.info("Creating/verifying user_tokens table...")
+                    if not db.create_table():
+                        logger.error("Failed to create/verify database tables")
+                        db.disconnect()
+                        return False
+                    logger.info("Table verified/created successfully")
                     
                     # Save token to database
                     token_json_str = creds.to_json()
+                    logger.info(f"Saving token JSON (length: {len(token_json_str)} chars) to database...")
                     if db.save_user_token(user_id, token_json_str):
-                        logger.info(f"Saved credentials to database for user {user_id}")
+                        logger.info(f"✅ Successfully saved credentials to database for user {user_id}")
+                        # Verify the save by reading it back
+                        saved_token = db.get_user_token(user_id)
+                        if saved_token:
+                            logger.info(f"✅ Verified: Token exists in database for user {user_id}")
+                        else:
+                            logger.warning(f"⚠️ Warning: Token saved but could not be retrieved for user {user_id}")
                     else:
-                        logger.error("Failed to save token to database")
+                        logger.error("❌ Failed to save token to database (save_user_token returned False)")
                         db.disconnect()
                         return False
                     
                     db.disconnect()
+                    logger.info("Database connection closed")
                 except Exception as e:
-                    logger.error(f"Failed to save token to database: {str(e)}")
+                    logger.error(f"❌ Exception while saving token to database: {str(e)}", exc_info=True)
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
                     return False
             else:
-                logger.warning("No user_id provided, token not saved to database")
+                logger.warning(f"⚠️ No user_id provided (user_id={user_id}), token not saved to database")
+                logger.warning("This will cause authentication to fail on next request!")
             
             # Build Gmail service
             self.service = build('gmail', 'v1', credentials=creds)

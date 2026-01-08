@@ -5,7 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: quotesnap-backend
+    container_name: quotesnap-backend-v2
     ports:
       - "8000:8000"
     environment:
@@ -42,7 +42,7 @@ services:
       # File Storage
       - UPLOAD_FOLDER=${UPLOAD_FOLDER:-uploads}
       - EXCEL_TEMPLATE_PATH=${EXCEL_TEMPLATE_PATH:-sample/QuotationFormat.xlsx}
-      
+      - MOTHERDUCK_TOKEN=${MOTHERDUCK_TOKEN}
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - LOG_FILE=${LOG_FILE:-logs/app.log}
