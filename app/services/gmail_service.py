@@ -158,13 +158,14 @@ class GmailService:
             logger.error(f"Failed to generate authorization URL: {str(e)}")
             return None
     
-    def authenticate_from_code(self, code: str, redirect_uri: str) -> bool:
+    def authenticate_from_code(self, code: str, redirect_uri: str, user_id: str = None) -> bool:
         """
         Complete OAuth flow by exchanging authorization code for credentials.
         
         Args:
             code (str): Authorization code from OAuth callback
             redirect_uri (str): The redirect URI used in the initial request
+            user_id (str): User ID from Flask session for token storage
             
         Returns:
             bool: True if authentication successful
@@ -184,20 +185,35 @@ class GmailService:
             self.flow.fetch_token(code=code)
             creds = self.flow.credentials
             
-            # Save the credentials
-            token_path = self.token_path or 'token.json'
-            try:
-                # Ensure token directory exists
-                token_dir = os.path.dirname(token_path)
-                if token_dir and not os.path.exists(token_dir):
-                    os.makedirs(token_dir, exist_ok=True)
+            # Save the credentials to database instead of file
+            if user_id:
+                try:
+                    # Import here to avoid circular imports
+                    from app.services.duckdb_service import DuckDBService
                     
-                with open(token_path, 'w') as token:
-                    token.write(creds.to_json())
-                logger.info(f"Saved credentials to {token_path}")
-            except Exception as e:
-                logger.error(f"Failed to save token: {str(e)}")
-                return False
+                    db = DuckDBService()
+                    if not db.connect():
+                        logger.error("Failed to connect to database for token storage")
+                        return False
+                    
+                    # Ensure table exists
+                    db.create_table()
+                    
+                    # Save token to database
+                    token_json_str = creds.to_json()
+                    if db.save_user_token(user_id, token_json_str):
+                        logger.info(f"Saved credentials to database for user {user_id}")
+                    else:
+                        logger.error("Failed to save token to database")
+                        db.disconnect()
+                        return False
+                    
+                    db.disconnect()
+                except Exception as e:
+                    logger.error(f"Failed to save token to database: {str(e)}")
+                    return False
+            else:
+                logger.warning("No user_id provided, token not saved to database")
             
             # Build Gmail service
             self.service = build('gmail', 'v1', credentials=creds)
@@ -332,15 +348,6 @@ class GmailService:
         )
         self.monitoring_thread.start()
         logger.info(f"Gmail monitoring started with {check_interval}s interval")
-        return True
-        self.monitoring_thread = threading.Thread(
-            target=self._monitoring_loop,
-            args=(check_interval,),
-            daemon=True
-        )
-        self.monitoring_thread.start()
-        
-        logger.info(f"Email monitoring started with {check_interval}s interval")
         return True
     
     def stop_monitoring(self) -> bool:
@@ -953,24 +960,23 @@ class GmailService:
                 if label['name'] == label_name:
                     return label['id']
             
-            # Gmail uses predefined color indices, not hex colors
-            # Let's create labels without custom colors first, then we can modify them
+            # Gmail API color format: textColor and backgroundColor as hex strings
             color_map = {
-                'green': None,  # Will use default and modify later
-                'grey': None,   # Will use default and modify later  
-                'blue': None,   # Will use default and modify later
-                'red': None,    # Will use default and modify later
+                'green': {'textColor': '#04550d', 'backgroundColor': '#b3efd3'},
+                'grey': {'textColor': '#5f6368', 'backgroundColor': '#e8eaed'},
+                'blue': {'textColor': '#1967d2', 'backgroundColor': '#aecbfa'},
+                'red': {'textColor': '#a50e0e', 'backgroundColor': '#fad2d2'},
             }
             
-            # Create label without color first
+            # Create label object
             label_object = {
                 'name': label_name,
                 'labelListVisibility': 'labelShow',
                 'messageListVisibility': 'show'
             }
             
-            # Add color only if it's specified and we have a valid mapping
-            if color and color_map.get(color) is not None:
+            # Add color if specified and valid
+            if color and color in color_map:
                 label_object['color'] = color_map[color]
             
             created_label = self.service.users().labels().create(

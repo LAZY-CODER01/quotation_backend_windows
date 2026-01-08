@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 import uuid
+import json
 from datetime import datetime
 from flask import Flask, jsonify, send_file, redirect, session, request
 from flask_cors import CORS
@@ -111,17 +112,31 @@ def create_flask_app():
                     'user_id': user_id
                 })
             
-            token_path = get_user_token_path(user_id)
+            # Check for token in database instead of file system
+            db = DuckDBService()
+            if not db.connect():
+                logger.error("Failed to connect to database")
+                return jsonify({
+                    'authenticated': False,
+                    'message': 'Database connection failed'
+                }), 500
             
-            if os.path.exists(token_path):
-                # Token file exists, check if valid
+            # Ensure table exists
+            db.create_table()
+            
+            # Get token from database
+            token_json_str = db.get_user_token(user_id)
+            
+            if token_json_str:
+                # Token exists in database, check if valid
                 from google.oauth2.credentials import Credentials
                 try:
                     SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 
                               'https://www.googleapis.com/auth/gmail.modify']
-                    creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+                    creds = Credentials.from_authorized_user_info(json.loads(token_json_str), SCOPES)
                     
                     if creds and creds.valid:
+                        db.disconnect()
                         return jsonify({
                             'authenticated': True,
                             'message': 'User is authenticated'
@@ -130,26 +145,37 @@ def create_flask_app():
                         from google.auth.transport.requests import Request
                         try:
                             creds.refresh(Request())
-                            # Save refreshed credentials
-                            with open(token_path, 'w') as token:
-                                token.write(creds.to_json())
-                            return jsonify({
-                                'authenticated': True,
-                                'message': 'Token refreshed successfully'
-                            })
+                            # Save refreshed credentials to database
+                            refreshed_token_json = creds.to_json()
+                            if db.save_user_token(user_id, refreshed_token_json):
+                                db.disconnect()
+                                return jsonify({
+                                    'authenticated': True,
+                                    'message': 'Token refreshed successfully'
+                                })
+                            else:
+                                db.disconnect()
+                                logger.error("Failed to save refreshed token to database")
+                                return jsonify({
+                                    'authenticated': False,
+                                    'message': 'Token refreshed but failed to save'
+                                })
                         except Exception as e:
+                            db.disconnect()
                             logger.error(f"Failed to refresh token: {str(e)}")
                             return jsonify({
                                 'authenticated': False,
                                 'message': 'Token expired and refresh failed'
                             })
                 except Exception as e:
+                    db.disconnect()
                     logger.error(f"Error checking credentials: {str(e)}")
                     return jsonify({
                         'authenticated': False,
                         'message': 'Invalid credentials'
                     })
             
+            db.disconnect()
             return jsonify({
                 'authenticated': False,
                 'message': 'No authentication token found'
@@ -185,12 +211,18 @@ def create_flask_app():
                 'session_cookie_domain': app.config.get('SESSION_COOKIE_DOMAIN'),
             }
             
-            # Check if token exists for current user
+            # Check if token exists for current user in database
             user_id = session.get('user_id')
             if user_id:
-                token_path = get_user_token_path(user_id)
-                debug_info['token_path'] = token_path
-                debug_info['token_exists'] = os.path.exists(token_path)
+                db = DuckDBService()
+                if db.connect():
+                    db.create_table()
+                    token_json_str = db.get_user_token(user_id)
+                    db.disconnect()
+                    debug_info['token_exists_in_db'] = token_json_str is not None
+                else:
+                    debug_info['token_exists_in_db'] = False
+                    debug_info['db_connection_error'] = True
             
             return jsonify(debug_info)
         except Exception as e:
@@ -292,7 +324,8 @@ def create_flask_app():
                 token_path=get_user_token_path(user_id)
             )
 
-            if gmail_service.authenticate_from_code(code, Config.OAUTH_REDIRECT_URI):
+            # Pass user_id to authenticate_from_code so it can save token to DB
+            if gmail_service.authenticate_from_code(code, Config.OAUTH_REDIRECT_URI, user_id=user_id):
                 gmail_services[user_id] = gmail_service
 
                 if not monitoring_active.get(user_id):
@@ -315,7 +348,7 @@ def create_flask_app():
     @app.route('/api/auth/logout', methods=['POST'])
     def auth_logout():
         """
-        Logout user by removing token file.
+        Logout user by removing token from database.
         
         Returns:
             JSON response confirming logout
@@ -323,9 +356,13 @@ def create_flask_app():
         try:
             user_id = session.get('user_id')
             if user_id:
-                token_path = get_user_token_path(user_id)
-                if os.path.exists(token_path):
-                    os.remove(token_path)
+                # Delete token from database instead of file system
+                db = DuckDBService()
+                if db.connect():
+                    db.create_table()  # Ensure table exists
+                    db.delete_user_token(user_id)
+                    db.disconnect()
+                    logger.info(f"Deleted token from database for user {user_id}")
                 
                 # Stop monitoring
                 if user_id in gmail_services:

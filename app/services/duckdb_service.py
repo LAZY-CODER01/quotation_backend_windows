@@ -1,266 +1,216 @@
-"""
-DuckDB service for SnapQuote application.
-
-This module handles all DuckDB operations for storing
-AI extraction results and managing email processing data.
-"""
-
 import duckdb
-import json
-import logging
 import os
+import logging
+import json
 from datetime import datetime
-from typing import Dict, Optional, List
 
 logger = logging.getLogger(__name__)
 
 class DuckDBService:
-    """
-    Service class for handling DuckDB operations.
-    """
-    
-    def __init__(self, db_path: str = "database/snapquote.duckdb"):
+    def __init__(self):
         """
-        Initialize DuckDB service with database path.
+        Initialize DuckDB connection.
+        Connects to MotherDuck if token is present, otherwise falls back to local file.
+        """
+        self.token = os.getenv('MOTHERDUCK_TOKEN')
         
-        Args:
-            db_path (str): Path to DuckDB database file
-        """
-        self.db_path = db_path
+        if self.token:
+            # ✅ Connect to MotherDuck Cloud
+            # 'snapquote_db' is the name of your database in the cloud
+            self.db_path = f'md:snapquote_db?motherduck_token={self.token}'
+            self.is_cloud = True
+            logger.info("🔌 Configured for MotherDuck Cloud Database")
+        else:
+            # ⚠️ Fallback for local development if no token
+            self.db_path = 'local_dev.duckdb'
+            self.is_cloud = False
+            logger.warning("⚠️ MOTHERDUCK_TOKEN not found. Using local file 'local_dev.duckdb'")
+            
         self.connection = None
-        
-        # Ensure database directory exists
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        
-        logger.info(f"DuckDB service initialized with path: {db_path}")
-    
-    def connect(self) -> bool:
-        """
-        Establish connection to DuckDB database.
-        
-        Returns:
-            bool: True if connection successful
-        """
+
+    def connect(self):
+        """Establish connection to the database."""
         try:
             self.connection = duckdb.connect(self.db_path)
-            logger.info("DuckDB connection established")
             return True
         except Exception as e:
-            logger.error(f"DuckDB connection failed: {str(e)}")
+            logger.error(f"❌ Database connection error: {str(e)}")
             return False
-    
+
     def disconnect(self):
-        """
-        Close database connection.
-        """
+        """Close the database connection."""
         if self.connection:
-            self.connection.close()
-            self.connection = None
-            logger.info("DuckDB connection closed")
-    
-    def create_table(self) -> bool:
-        """
-        Create the email_extractions table.
-        
-        Returns:
-            bool: True if table created successfully
-        """
-        if not self.connection:
-            logger.error("No DuckDB connection available")
-            return False
-        
+            try:
+                self.connection.close()
+            except Exception as e:
+                logger.error(f"Error closing connection: {str(e)}")
+            finally:
+                self.connection = None
+
+    def create_table(self):
+        """Create necessary tables (Emails + Auth Tokens)."""
         try:
-            self.connection.execute('''
+            # 1. Create Email Extractions Table
+            self.connection.execute("""
+                CREATE SEQUENCE IF NOT EXISTS id_sequence START 1;
                 CREATE TABLE IF NOT EXISTS email_extractions (
-                    id INTEGER PRIMARY KEY,
-                    gmail_id VARCHAR UNIQUE NOT NULL,
-                    subject VARCHAR,
+                    id INTEGER DEFAULT nextval('id_sequence'),
+                    gmail_id VARCHAR PRIMARY KEY,
                     sender VARCHAR,
                     received_at TIMESTAMP,
-                    extraction_status VARCHAR, -- 'VALID' or 'IRRELEVANT'
+                    subject VARCHAR,
+                    body_text TEXT,
                     extraction_result JSON,
-                    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    extraction_status VARCHAR,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+
+            # 2. ✅ Create User Tokens Table (Fixes logout on deploy)
+            self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS user_tokens (
+                    user_id VARCHAR PRIMARY KEY,
+                    token_json JSON,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
+                );
+            """)
             
-            # Create index for faster lookups
-            self.connection.execute('''
-                CREATE INDEX IF NOT EXISTS idx_gmail_id ON email_extractions (gmail_id)
-            ''')
-            
-            logger.info("DuckDB table created successfully")
+            logger.info("✅ Database tables initialized (Emails + Tokens)")
             return True
-            
         except Exception as e:
-            logger.error(f"Error creating DuckDB table: {str(e)}")
+            logger.error(f"❌ Table creation error: {str(e)}")
             return False
-    
-    def insert_extraction(self, email_data: Dict, extraction_result: Dict) -> Optional[int]:
-        """
-        Insert a new email extraction record.
-        
-        Args:
-            email_data (Dict): Email metadata
-            extraction_result (Dict): AI extraction result
-            
-        Returns:
-            Optional[int]: Record ID if inserted successfully, None otherwise
-        """
-        if not self.connection:
-            logger.error("No DuckDB connection available")
-            return None
-        
+
+    # --- Email Methods ---
+    def add_extraction(self, data):
         try:
-            # Check if record with this gmail_id already exists
-            existing = self.connection.execute(
-                'SELECT id FROM email_extractions WHERE gmail_id = ?', 
-                (email_data.get('gmail_id'),)
+            # Convert dicts to JSON strings for storage
+            extraction_result_json = json.dumps(data.get('extraction_result', {}))
+            
+            query = """
+                INSERT INTO email_extractions (
+                    gmail_id, sender, received_at, subject, body_text, 
+                    extraction_result, extraction_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (gmail_id) DO UPDATE SET
+                    extraction_result = EXCLUDED.extraction_result,
+                    extraction_status = EXCLUDED.extraction_status,
+                    updated_at = CURRENT_TIMESTAMP
+            """
+            
+            self.connection.execute(query, [
+                data['gmail_id'],
+                data.get('sender', ''),
+                data.get('received_at'),
+                data.get('subject', ''),
+                data.get('body_text', ''),
+                extraction_result_json,
+                data.get('extraction_status', 'PENDING')
+            ])
+            self.connection.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error adding extraction: {str(e)}")
+            return False
+
+    def get_all_extractions(self, limit=100):
+        try:
+            result = self.connection.execute(
+                "SELECT * FROM email_extractions ORDER BY received_at DESC LIMIT ?", 
+                [limit]
+            ).fetchall()
+            
+            columns = ['id', 'gmail_id', 'sender', 'received_at', 'subject', 'body_text', 'extraction_result', 'extraction_status', 'created_at']
+            extractions = []
+            
+            for row in result:
+                item = dict(zip(columns, row))
+                # Parse JSON string back to dict
+                if isinstance(item['extraction_result'], str):
+                    try:
+                        item['extraction_result'] = json.loads(item['extraction_result'])
+                    except:
+                        pass
+                extractions.append(item)
+                
+            return extractions
+        except Exception as e:
+            logger.error(f"Error getting extractions: {str(e)}")
+            return []
+
+    def get_extraction(self, gmail_id):
+        try:
+            result = self.connection.execute(
+                "SELECT * FROM email_extractions WHERE gmail_id = ?", 
+                [gmail_id]
             ).fetchone()
             
-            if existing:
-                logger.info(f"Email with gmail_id {email_data.get('gmail_id')} already exists, updating instead")
-                success = self.update_extraction(email_data.get('gmail_id'), extraction_result)
-                return existing[0] if success else None
+            if not result:
+                return None
+                
+            columns = ['id', 'gmail_id', 'sender', 'received_at', 'subject', 'body_text', 'extraction_result', 'extraction_status', 'created_at']
+            item = dict(zip(columns, result))
             
-            # Determine extraction status
-            status = "IRRELEVANT" if extraction_result.get("status") == "NOT_VALID" else "VALID"
-            
-            # Generate a simple ID based on current max ID + 1
-            max_id_result = self.connection.execute('SELECT COALESCE(MAX(id), 0) FROM email_extractions').fetchone()
-            next_id = (max_id_result[0] if max_id_result else 0) + 1
-            
-            self.connection.execute('''
-                INSERT INTO email_extractions (
-                    id, gmail_id, subject, sender, received_at, extraction_status, extraction_result
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                next_id,
-                email_data.get('gmail_id'),
-                email_data.get('subject'),
-                email_data.get('sender'),
-                email_data.get('received_at'),
-                status,
-                json.dumps(extraction_result)
-            ))
-            
-            logger.info(f"Email extraction inserted with ID: {next_id}")
-            return next_id
-            
+            if isinstance(item['extraction_result'], str):
+                try:
+                    item['extraction_result'] = json.loads(item['extraction_result'])
+                except:
+                    pass
+            return item
         except Exception as e:
-            logger.error(f"Error inserting email extraction: {str(e)}")
+            logger.error(f"Error getting extraction: {str(e)}")
             return None
-    
-    def update_extraction(self, gmail_id: str, extraction_result: Dict) -> bool:
-        """
-        Update an existing email extraction record.
-        
-        Args:
-            gmail_id (str): Gmail message ID
-            extraction_result (Dict): New AI extraction result
-            
-        Returns:
-            bool: True if updated successfully
-        """
-        if not self.connection:
-            logger.error("No DuckDB connection available")
-            return False
-        
+
+    def update_extraction(self, gmail_id, extraction_result):
         try:
-            status = "IRRELEVANT" if extraction_result.get("status") == "NOT_VALID" else "VALID"
-            
-            self.connection.execute('''
+            extraction_result_json = json.dumps(extraction_result)
+            self.connection.execute("""
                 UPDATE email_extractions 
-                SET extraction_status = ?, extraction_result = ?, updated_at = CURRENT_TIMESTAMP
+                SET extraction_result = ?, extraction_status = 'VALID'
                 WHERE gmail_id = ?
-            ''', (status, json.dumps(extraction_result), gmail_id))
-            
-            logger.info(f"Email extraction updated for gmail_id: {gmail_id}")
+            """, [extraction_result_json, gmail_id])
+            self.connection.commit()
             return True
-            
         except Exception as e:
-            logger.error(f"Error updating email extraction: {str(e)}")
+            logger.error(f"Error updating extraction: {str(e)}")
             return False
-    
-    def get_extraction(self, gmail_id: str) -> Optional[Dict]:
-        """
-        Get extraction record by Gmail ID.
-        
-        Args:
-            gmail_id (str): Gmail message ID
-            
-        Returns:
-            Optional[Dict]: Extraction record if found, None otherwise
-        """
-        if not self.connection:
-            logger.error("No DuckDB connection available")
-            return None
-        
+
+    # --- ✅ NEW: Auth Token Methods ---
+    def save_user_token(self, user_id, token_json_str):
+        """Saves or updates a user's Google OAuth token in the DB."""
         try:
-            result = self.connection.execute('''
-                SELECT id, gmail_id, subject, sender, received_at, 
-                       extraction_status, extraction_result, processed_at, updated_at
-                FROM email_extractions 
-                WHERE gmail_id = ?
-            ''', (gmail_id,)).fetchone()
-            
-            if result:
-                return {
-                    'id': result[0],
-                    'gmail_id': result[1],
-                    'subject': result[2],
-                    'sender': result[3],
-                    'received_at': result[4],
-                    'extraction_status': result[5],
-                    'extraction_result': json.loads(result[6]),
-                    'processed_at': result[7],
-                    'updated_at': result[8]
-                }
-            return None
-            
+            self.connection.execute("""
+                INSERT INTO user_tokens (user_id, token_json, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    token_json = EXCLUDED.token_json,
+                    updated_at = CURRENT_TIMESTAMP
+            """, [user_id, token_json_str])
+            self.connection.commit()
+            return True
         except Exception as e:
-            logger.error(f"Error retrieving email extraction: {str(e)}")
-            return None
-    
-    def get_all_extractions(self, limit: int = 100) -> List[Dict]:
-        """
-        Get all extraction records with pagination.
-        
-        Args:
-            limit (int): Maximum number of records to return
-            
-        Returns:
-            List[Dict]: List of extraction records
-        """
-        if not self.connection:
-            logger.error("No DuckDB connection available")
-            return []
-        
+            logger.error(f"Error saving user token: {str(e)}")
+            return False
+
+    def get_user_token(self, user_id):
+        """Retrieves a user's Google OAuth token from the DB."""
         try:
-            results = self.connection.execute('''
-                SELECT id, gmail_id, subject, sender, received_at, 
-                       extraction_status, extraction_result, processed_at, updated_at
-                FROM email_extractions 
-                ORDER BY processed_at DESC
-                LIMIT ?
-            ''', (limit,)).fetchall()
+            result = self.connection.execute("""
+                SELECT token_json FROM user_tokens WHERE user_id = ?
+            """, [user_id]).fetchone()
             
-            extractions = []
-            for result in results:
-                extractions.append({
-                    'id': result[0],
-                    'gmail_id': result[1],
-                    'subject': result[2],
-                    'sender': result[3],
-                    'received_at': result[4],
-                    'extraction_status': result[5],
-                    'extraction_result': json.loads(result[6]),
-                    'processed_at': result[7],
-                    'updated_at': result[8]
-                })
-            
-            return extractions
-            
+            # result[0] is the JSON string
+            return result[0] if result else None
         except Exception as e:
-            logger.error(f"Error retrieving email extractions: {str(e)}")
-            return []
+            logger.error(f"Error retrieving user token: {str(e)}")
+            return None
+
+    def delete_user_token(self, user_id):
+        """Deletes a user's token (Logout)."""
+        try:
+            self.connection.execute("DELETE FROM user_tokens WHERE user_id = ?", [user_id])
+            self.connection.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting user token: {str(e)}")
+            return False
