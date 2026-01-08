@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Logs
+*.log
+logs/
+
+# Database (will be mounted as volume)
+database/*.duckdb
+
+# Tokens (will be mounted as volume)
+tokens/
+
+# Generated files (will be mounted as volume)
+generated/
+
+# Uploads (will be mounted as volume)
+uploads/
+
+# Environment files (should be passed as env vars)
+.env
+.env.local
+
+# Test files
+test_*.py
+*_test.py
+
