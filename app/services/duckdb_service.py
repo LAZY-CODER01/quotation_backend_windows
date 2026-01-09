@@ -142,14 +142,14 @@ class DuckDBService:
 
     def get_all_extractions(self, limit=100):
         try:
-            # Execute query
+
             result = self.connection.execute(
                 "SELECT * FROM email_extractions ORDER BY received_at DESC LIMIT ?", 
                 [limit]
             ).fetchall()
             
-            # ✅ EXPLICITLY define columns to match the DB schema (10 columns)
-            # This prevents the "zip" mismatch crash
+
+
             columns = [
                 'id', 'gmail_id', 'sender', 'received_at', 'subject', 
                 'body_text', 'extraction_result', 'extraction_status', 
