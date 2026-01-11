@@ -981,11 +981,24 @@ class GmailService:
             
             # Gmail API color format: textColor and backgroundColor as hex strings
             color_map = {
-                'green': {'textColor': '#04550d', 'backgroundColor': '#b3efd3'},
-                'grey': {'textColor': '#5f6368', 'backgroundColor': '#e8eaed'},
-                'blue': {'textColor': '#1967d2', 'backgroundColor': '#aecbfa'},
-                'red': {'textColor': '#a50e0e', 'backgroundColor': '#fad2d2'},
-            }
+             'green': {
+                'textColor': '#ffffff',
+                'backgroundColor': '#16a766'
+                                            },
+             'grey': {
+                'textColor': '#4a4a4a',
+                'backgroundColor': '#e8eaed'
+                             },
+             'blue': {
+                'textColor': '#ffffff',
+                'backgroundColor': '#4986e7'
+                                 },
+             'red': {
+                'textColor': '#ffffff',
+                'backgroundColor': '#e66550'
+                      }
+}
+
             
             # Create label object
             label_object = {
