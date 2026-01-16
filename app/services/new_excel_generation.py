@@ -230,11 +230,11 @@ class ExcelGenerationService:
                     "subject", ""
                 )
 
-                ws.Cells(1, 1).Value = f"To: {meta_to}"
-                ws.Cells(1, 2).Value = f"Email: {meta_email}"
-                ws.Cells(1, 3).Value = f"Mobile: {meta_mobile}"
-                ws.Cells(1, 4).Value = f"Subject: {meta_subject}"
-
+                ws.Range("A2").Value = f"To: {meta_to}"
+                ws.Range("A5").Value = f"Email: {meta_email}"
+                ws.Range("A4").Value = f"Mobile: {meta_mobile}"
+                ws.Range("E4").Value = f"Subject: {meta_subject}"
+                ws.Range("E3").Value = f"Date: {datetime.now().strftime('%Y-%m-%d')}"
                 # Make header bold
                 for col in range(1, 5):
                     try:
@@ -245,8 +245,8 @@ class ExcelGenerationService:
                 # don't fail the whole process if header insertion fails
                 pass
 
-            START_ROW = 4
-            MAX_ROWS = 6
+            START_ROW = 12
+            MAX_ROWS = 20
 
             for idx, item in enumerate(requirements[:MAX_ROWS]):
                 row = START_ROW + idx
@@ -280,23 +280,25 @@ class ExcelGenerationService:
 
                 # QTY
                 qty_val = self._to_float(item.get("Quantity", 0))
-                ws.Cells(row, 3).Value = qty_val
-                ws.Cells(row, 3).NumberFormat = "#,##0.00"
+                ws.Cells(row, 6).Value = qty_val
+                ws.Cells(row, 6).NumberFormat = "#,##0.00"
 
                 # UNIT
-                ws.Cells(row, 4).Value = item.get("Unit", "")
+                ws.Cells(row, 7).Value = item.get("Unit", "")
 
                 # UNIT PRICE
                 price_val = self._to_float(item.get("Unit price", 0))
-                ws.Cells(row, 5).Value = price_val
-                ws.Cells(row, 5).NumberFormat = "#,##0.00"
+                ws.Cells(row, 8).Value = price_val
+                ws.Cells(row, 8).NumberFormat = "#,##0.00"
 
                 # TOTAL (formula so Excel recalculates)
-                ws.Cells(row, 6).Formula = f"=C{row}*E{row}"
-                ws.Cells(row, 6).NumberFormat = "#,##0.00"
+                ws.Cells(row, 9).Formula = f"=F{row}*H{row}"
+
+                ws.Cells(row, 9).NumberFormat = "#,##0.00"
 
             # TOTALS (FIXED ROWS)
-            TOTAL_ROW = START_ROW + MAX_ROWS + 1
+            last_row = START_ROW + len(requirements[:MAX_ROWS]) - 1
+            TOTAL_ROW = last_row + 2
             VAT_ROW = TOTAL_ROW + 1
             GRAND_ROW = VAT_ROW + 1
 
@@ -308,105 +310,158 @@ class ExcelGenerationService:
                 sum_start = START_ROW
                 sum_end = START_ROW
 
-            ws.Cells(TOTAL_ROW, 6).Formula = f"=SUM(F{sum_start}:F{sum_end})"
-            ws.Cells(TOTAL_ROW, 6).NumberFormat = "#,##0.00"
-            ws.Cells(VAT_ROW, 6).Formula = f"=F{TOTAL_ROW}*0.05"
-            ws.Cells(VAT_ROW, 6).NumberFormat = "#,##0.00"
-            ws.Cells(GRAND_ROW, 6).Formula = f"=F{TOTAL_ROW}*(1+0.05)"
-            ws.Cells(GRAND_ROW, 6).NumberFormat = "#,##0.00"
+            ws.Cells(TOTAL_ROW, 9).Formula = f"=SUM(I{START_ROW}:I{last_row})"
+            ws.Cells(TOTAL_ROW, 9).NumberFormat = "#,##0.00"
+            ws.Cells(VAT_ROW, 9).Formula = f"=I{TOTAL_ROW}*0.05"
+            ws.Cells(VAT_ROW, 9).NumberFormat = "#,##0.00"
+            ws.Cells(GRAND_ROW, 9).Formula = f"=SUM(I{TOTAL_ROW}:I{VAT_ROW})"
+            ws.Cells(GRAND_ROW, 9).NumberFormat = "#,##0.00"
 
         except Exception as e:
             logger.error(f"win32 error: {e}")
 
     def _fill_quotation_template_openpyxl(self, ws, email_data, extraction_result):
-        try:
-            from openpyxl.cell.rich_text import TextBlock, CellRichText
-            from openpyxl.cell.text import InlineFont
-            from openpyxl.styles import Font, Alignment
+        from openpyxl.cell.rich_text import TextBlock, CellRichText
+        from openpyxl.cell.text import InlineFont
+        from openpyxl.styles import Font, Alignment
 
-            requirements = extraction_result.get("Requirements", [])
+        requirements = extraction_result.get("Requirements", [])
+        
+        START_ROW = 12
+        MAX_ROWS = 20
 
-            START_ROW = 4
-            MAX_ROWS = 6
-
-            for idx, item in enumerate(requirements[:MAX_ROWS]):
-                row = START_ROW + idx
-
-                # SL NO
+        # --- 1. FILL DATA ROWS ---
+        for idx, item in enumerate(requirements[:MAX_ROWS]):
+            row = START_ROW + idx
+            try:
+                # A. SL NO
                 ws.cell(row=row, column=1).value = idx + 1
 
-                # -------- RICH TEXT WITH PADDING --------
-                desc_text = item.get("Description", "") or "N/A"
-                offering_text = item.get("Company Offering", "") or ""
+                # B. RICH TEXT DESCRIPTION
+                desc_text = str(item.get("Description", "") or "N/A")
+                offering_text = str(item.get("Company Offering", "") or "")
 
-                header1 = TextBlock(
-                    InlineFont(b=True, u="single", color="800080"),
-                    "\nClient's requirements:\n",
-                )
-
+                header1 = TextBlock(InlineFont(b=True, u="single", color="800080"), "Client's requirements:\n")
                 body1 = TextBlock(InlineFont(color="000000"), f"{desc_text}\n\n")
-
-                header2 = TextBlock(
-                    InlineFont(b=True, u="single", color="FF0000"),
-                    "Company Offering:\n",
-                )
-
-                body2 = TextBlock(InlineFont(color="000000"), f"{offering_text}\n")
+                header2 = TextBlock(InlineFont(b=True, u="single", color="FF0000"), "Company Offering:\n")
+                body2 = TextBlock(InlineFont(color="000000"), f"{offering_text}")
 
                 cell = ws.cell(row=row, column=2)
-
                 cell.value = CellRichText([header1, body1, header2, body2])
-                cell.alignment = Alignment(
-                wrap_text=True,
-                vertical="top"
-            )
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
 
-            # 🔒 FIXED HEIGHT FOR MERGED CELLS (CRITICAL)
+                # C. ROW HEIGHT
                 ws.row_dimensions[row].height = 140
 
-                # -------- NUMBERS --------
+                # D. QUANTITY & UNIT
                 qty_val = self._to_float(item.get("Quantity", 0))
-                price_val = self._to_float(item.get("Unit price", 0))
-
-                ws.cell(row=row, column=3).value = qty_val
-                ws.cell(row=row, column=3).number_format = "#,##0.00"
-
-                ws.cell(row=row, column=4).value = item.get("Unit", "")
-
-                ws.cell(row=row, column=5).value = price_val
-                ws.cell(row=row, column=5).number_format = "#,##0.00"
-
-                ws.cell(row=row, column=6).value = f"=C{row}*E{row}"
+                ws.cell(row=row, column=6).value = qty_val
                 ws.cell(row=row, column=6).number_format = "#,##0.00"
+                ws.cell(row=row, column=7).value = item.get("Unit", "")
 
-            # ================= TOTALS (DYNAMIC) =================
+                # E. UNIT PRICE (Client View - Initially from extraction)
+                # Note: If you want this to ALSO update based on CP/%, change value to f"=N{row}"
+                price_val = self._to_float(item.get("Unit price", 0))
+                ws.cell(row=row, column=8).value = price_val 
+                ws.cell(row=row, column=8).number_format = "#,##0.00"
 
-            last_item_row = START_ROW + len(requirements[:MAX_ROWS]) - 1
+                # F. TOTAL PRICE (Client View)
+                ws.cell(row=row, column=9).value = f"=F{row}*H{row}"
+                ws.cell(row=row, column=9).number_format = "#,##0.00"
+                
+                # --- NEW CALCULATION LOGIC (Driven by CP & %) ---
+                
+                # K (11): CP (Cost Price) - Input
+                ws.cell(row=row, column=11).value = 0.00
+                ws.cell(row=row, column=11).number_format = "#,##0.00"
 
-            TOTAL_ROW = last_item_row + 2
+                # L (12): % (Margin Percentage) - Input
+                # We set this to 0% initially. User types '20%' or '0.2'
+                ws.cell(row=row, column=12).value = 0.00
+                ws.cell(row=row, column=12).number_format = "0.00%"
+
+                # N (14): SP (Selling Price) - Calculated
+                # Formula: SP = CP * (1 + %)
+                ws.cell(row=row, column=14).value = f"=K{row}*(1+L{row})"
+                ws.cell(row=row, column=14).number_format = "#,##0.00"
+
+                # M (13): Profit in AED - Calculated
+                # Formula: Profit = (SP - CP) * Qty
+                # We use the calculated SP (Col N) minus CP (Col K), times Qty (Col F)
+                ws.cell(row=row, column=13).value = f"=(N{row}-K{row})*F{row}"
+                ws.cell(row=row, column=13).number_format = "#,##0.00"
+
+                # G. OTHER COLUMNS
+                ws.cell(row=row, column=3).value = item.get("Brand and model", "")
+                d_cell = ws.cell(row=row, column=5, value="Ex stock, subject to prior sales.")
+                d_cell.font = Font(color="FF0000")
+                d_cell.alignment = Alignment(wrap_text=True, vertical='center')
+
+            except Exception as row_error:
+                logger.error(f"Error processing row {row}: {row_error}")
+                continue
+
+        # --- 2. TOTALS & FOOTER ---
+        try:
+            actual_rows = len(requirements[:MAX_ROWS])
+            last_data_row = START_ROW + actual_rows - 1
+            if last_data_row < START_ROW: last_data_row = START_ROW
+
+            TOTAL_ROW = last_data_row + 2
             VAT_ROW = TOTAL_ROW + 1
             GRAND_ROW = VAT_ROW + 1
 
-            ws.cell(row=TOTAL_ROW, column=1).value = "Total"
-            ws.cell(row=TOTAL_ROW, column=6).value = (
-                f"=SUM(F{START_ROW}:F{last_item_row})"
-            )
+            # Totals
+            ws.cell(row=TOTAL_ROW, column=1).value = "Total Amount (AED)"
+            ws.cell(row=TOTAL_ROW, column=9).value = f"=SUM(I{START_ROW}:I{last_data_row})"
 
-            ws.cell(row=VAT_ROW, column=1).value = "VAT (5%)"
-            ws.cell(row=VAT_ROW, column=6).value = f"=F{TOTAL_ROW}*0.05"
+            ws.cell(row=VAT_ROW, column=1).value = "VAT 5% (AED)"
+            ws.cell(row=VAT_ROW, column=9).value = f"=I{TOTAL_ROW}*0.05"
 
-            ws.cell(row=GRAND_ROW, column=1).value = "Grand Total"
-            ws.cell(row=GRAND_ROW, column=6).value = f"=F{TOTAL_ROW}+F{VAT_ROW}"
+            ws.cell(row=GRAND_ROW, column=1).value = "GRAND TOTAL AMOUNT (AED)"
+            ws.cell(row=GRAND_ROW, column=9).value = f"=SUM(I{TOTAL_ROW}:I{VAT_ROW})"
+            
+            # Total Profit Sum
+            ws.cell(row=TOTAL_ROW, column=13).value = f"=SUM(M{START_ROW}:M{last_data_row})"
+            ws.cell(row=TOTAL_ROW, column=13).number_format = "#,##0.00"
 
+            # Formatting
             for r in [TOTAL_ROW, VAT_ROW, GRAND_ROW]:
                 ws.cell(row=r, column=1).font = Font(bold=True)
-                ws.cell(row=r, column=6).number_format = "#,##0.00"
+                ws.cell(row=r, column=9).number_format = "#,##0.00"
+                ws.cell(row=r, column=9).font = Font(bold=True)
+
+            # --- TERMS SECTION ---
+            TERMS_START = GRAND_ROW + 2
+            
+            ws.cell(row=TERMS_START, column=1, value="TERMS:")
+            ws.cell(row=TERMS_START, column=1).font = Font(bold=True, underline="single")
+
+            terms = [
+                ("Price:", ""),
+                ("Delivery:", "Stated in Description Column Against Each Item."),
+                ("Payment:", "30 Days Credit."),
+                ("Validity:", "15 days from offer date.")
+            ]
+
+            for i, (key, value) in enumerate(terms):
+                r = TERMS_START + 1 + i
+                ws.cell(row=r, column=1, value=key)
+                ws.cell(row=r, column=2, value=value)
+                ws.cell(row=r, column=1).font = Font(bold=False)
+
+            MSG_ROW = TERMS_START + len(terms) + 2
+            ws.cell(row=MSG_ROW, column=1, value="Please revert for clarifications if any.")
+            ws.cell(row=MSG_ROW + 1, column=1, value="Thank you for providing an opportunity to quote.")
+            
+            ws.cell(row=MSG_ROW + 3, column=1, value="Best Regards,")
+            ws.cell(row=MSG_ROW + 3, column=1).font = Font(bold=True)
+
+            ws.cell(row=MSG_ROW + 6, column=1, value="(This message has been electronically transmitted and does not require a signature).")
+            ws.cell(row=MSG_ROW + 6, column=1).font = Font(italic=True, size=9)
 
         except Exception as e:
-            logger.error(f"openpyxl rich text error: {e}")
-            import traceback
-
-            logger.error(traceback.format_exc())
+            logger.error(f"Error writing totals/terms: {e}")
 
     def _to_float(self, value) -> float:
         """
@@ -557,3 +612,4 @@ if __name__ == "__main__":
         print(f"❌ Excel generation failed!")
 
     print("\n" + "=" * 50)
+
