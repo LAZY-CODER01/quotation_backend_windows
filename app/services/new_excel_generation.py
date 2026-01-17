@@ -90,7 +90,7 @@ class ExcelGenerationService:
         requirements = extraction_result.get("Requirements", [])
         
         # --- STYLING CONSTANTS ---
-        # 1. Borders: Thin Black & Thick Black
+        # 1. Borders
         thin_side = Side(border_style="thin", color="000000")
         full_border = Border(top=thin_side, bottom=thin_side, left=thin_side, right=thin_side)
         
@@ -104,7 +104,7 @@ class ExcelGenerationService:
         left_center_align = Alignment(horizontal="left", vertical="center")
         
         # 3. Fonts
-        red_font = Font(name='Calibri', size=11, color="FF0000")
+        red_bold_font = Font(name='Calibri', size=11, color="FF0000", bold=True)
         red_bold = Font(bold=True, color="FF0000", name="Calibri", size=12)
         red_bold_big = Font(bold=True, color="FF0000", name="Calibri", size=13)
         bold_font = Font(bold=True, name='Calibri', size=11)
@@ -114,12 +114,15 @@ class ExcelGenerationService:
         yellow_fill = PatternFill(fill_type="solid", fgColor="FFFF66")
         grey_fill = PatternFill(fill_type="solid", fgColor="D9D9D9")
         
+        # --- NEW FILLS FOR PROFIT/PERCENTAGE ---
+        light_green_fill = PatternFill(fill_type="solid", fgColor="E2EFDA") # Light Green for %
+        light_blue_fill = PatternFill(fill_type="solid", fgColor="DDEBF7")  # Light Blue for Profit
+        
         START_ROW = 12
-   
         actual_rows = 0
 
-        # --- A. FILL DATA ROWS ---
-        for idx, item in enumerate(requirements):
+        # --- A. FILL DATA ROWS (Loop over ALL requirements) ---
+        for idx, item in enumerate(requirements): 
             row = START_ROW + idx
             actual_rows += 1
             try:
@@ -130,12 +133,8 @@ class ExcelGenerationService:
                 desc_text = str(item.get("Description", "") or "N/A")
                 offering_text = str(item.get("Company Offering", "") or "")
 
-                # Rich Text Construction
-                # Header 1: "Your Requirement:" (Purple, Bold)
                 header1 = TextBlock(InlineFont(b=True, u="single", color="800080"), "Your Requirement:\n")
                 body1 = TextBlock(InlineFont(color="000000"), f"{desc_text}\n\n")
-                
-                # Header 2: "We OFFER:" (Red, Bold)
                 header2 = TextBlock(InlineFont(b=True, u="single", color="FF0000"), "We OFFER:\n")
                 body2 = TextBlock(InlineFont(color="000000"), f"{offering_text}")
 
@@ -145,48 +144,64 @@ class ExcelGenerationService:
                 # Col 3: BRAND
                 ws.cell(row=row, column=3).value = item.get("Brand and model", "")
 
-                # Col 5: DELIVERY (RED TEXT)
-                red_bold_font = Font(name='Calibri', size=11, color="FF0000", bold=True)
+                # Col 5: DELIVERY (RED BOLD)
                 cell_del = ws.cell(row=row, column=5, value="Ex stock, subject to prior sales.")
                 cell_del.font = red_bold_font
 
-                # Col 6: QTY
+                # Col 6: QTY (BOLD)
                 qty_val = self._to_float(item.get("Quantity", 0))
-                ws.cell(row=row, column=6).value = qty_val
-                ws.cell(row=row, column=6).number_format = "#,##0.00"
+                cell_qty = ws.cell(row=row, column=6)
+                cell_qty.value = qty_val
+                cell_qty.number_format = "#,##0.00"
+                cell_qty.font = bold_font
 
-                # Col 7: UNIT
-                ws.cell(row=row, column=7).value = item.get("Unit", "")
+                # Col 7: UNIT (BOLD)
+                cell_unit = ws.cell(row=row, column=7)
+                cell_unit.value = item.get("Unit", "")
+                cell_unit.font = bold_font  # <--- Unit is now BOLD
 
-                # Col 8: UNIT PRICE (Client View)
+                # Col 8: UNIT PRICE (BOLD)
                 price_val = self._to_float(item.get("Unit price", 0))
-                ws.cell(row=row, column=8).value = price_val 
-                ws.cell(row=row, column=8).number_format = "#,##0.00"
+                cell_price = ws.cell(row=row, column=8)
+                cell_price.value = price_val 
+                cell_price.number_format = "#,##0.00"
+                cell_price.font = bold_font
 
-                # Col 9: TOTAL PRICE FORMULA
-                # Formula: Qty * Unit Price
-                ws.cell(row=row, column=9).value = f"=F{row}*H{row}"
-                ws.cell(row=row, column=9).number_format = "#,##0.00"
+                # Col 9: TOTAL PRICE FORMULA (BOLD)
+                cell_total = ws.cell(row=row, column=9)
+                cell_total.value = f"=F{row}*H{row}"
+                cell_total.number_format = "#,##0.00"
+                cell_total.font = bold_font
                 
                 # --- INTERNAL CALCULATIONS (CP/Profit) ---
-                # Col K (11): CP Input (Default 0)
-                ws.cell(row=row, column=11).value = 0.00
-                ws.cell(row=row, column=11).number_format = "#,##0.00"
+                
+                # Col K (11): CP Input (BOLD)
+                cell_cp = ws.cell(row=row, column=11)
+                cell_cp.value = 0.00
+                cell_cp.number_format = "#,##0.00"
+                cell_cp.font = bold_font
 
-                # Col L (12): % Input (Default 0)
-                ws.cell(row=row, column=12).value = 0.00
-                ws.cell(row=row, column=12).number_format = "0.00%"
+                # Col L (12): % Input (Light Green Background)
+                cell_pct = ws.cell(row=row, column=12)
+                cell_pct.value = 0.00
+                cell_pct.number_format = "0.00%"
+                cell_pct.fill = light_green_fill # <--- COLOR APPLIED
 
-                # Col N (14): SP Formula = CP * (1 + %)
-                ws.cell(row=row, column=14).value = f"=K{row}*(1+L{row})"
-                ws.cell(row=row, column=14).number_format = "#,##0.00"
+                # Col M (13): Profit Formula (BOLD + Light Blue Background)
+                cell_profit = ws.cell(row=row, column=13)
+                cell_profit.value = f"=(N{row}-K{row})*F{row}"
+                cell_profit.number_format = "#,##0.00"
+                cell_profit.font = bold_font
+                cell_profit.fill = light_blue_fill # <--- COLOR APPLIED
 
-                # Col M (13): Profit Formula = (SP - CP) * Qty
-                ws.cell(row=row, column=13).value = f"=(N{row}-K{row})*F{row}"
-                ws.cell(row=row, column=13).number_format = "#,##0.00"
+                # Col N (14): SP Formula (BOLD)
+                cell_sp = ws.cell(row=row, column=14)
+                cell_sp.value = f"=K{row}*(1+L{row})"
+                cell_sp.number_format = "#,##0.00"
+                cell_sp.font = bold_font
 
                 # --- APPLY BORDERS & ALIGNMENT ---
-                ws.row_dimensions[row].height = 140 # Fixed Height
+                ws.row_dimensions[row].height = 140 
                 
                 for col in range(1, 15):
                     cell = ws.cell(row=row, column=col)
@@ -203,7 +218,6 @@ class ExcelGenerationService:
 
         # --- B. TOTALS & FOOTER ---
         try:
-            # Determine where the data ends
             last_data_row = START_ROW + max(actual_rows, 1) - 1
             
             TOTAL_ROW = last_data_row + 2
@@ -229,30 +243,24 @@ class ExcelGenerationService:
             for r in (TOTAL_ROW, VAT_ROW):
                 ws.cell(row=r, column=1).font = red_bold
                 ws.cell(row=r, column=9).font = red_bold
-
                 ws.cell(row=r, column=1).alignment = right_align
                 ws.cell(row=r, column=9).alignment = center_align
                 ws.cell(row=r, column=9).number_format = "#,##0.00"
-
-                # Borders for Total/VAT
                 for c in range(1, 10):
                     ws.cell(row=r, column=c).border = thick_border
 
             # ---- GRAND TOTAL SPECIAL STYLE ----
             ws.cell(row=GRAND_ROW, column=1).font = red_bold_big
             ws.cell(row=GRAND_ROW, column=9).font = red_bold_big
-
             ws.cell(row=GRAND_ROW, column=1).alignment = right_align
             ws.cell(row=GRAND_ROW, column=9).alignment = center_align
             ws.cell(row=GRAND_ROW, column=9).number_format = "#,##0.00"
-
-            # Borders & Fill for Grand Total
             for c in range(1, 10):
                 cell = ws.cell(row=GRAND_ROW, column=c)
                 cell.fill = yellow_fill
                 cell.border = thick_border
 
-            # Internal Profit Sum (Hidden/Side Column)
+
 
 
             # --- TERMS & CONDITIONS ---
@@ -263,12 +271,10 @@ class ExcelGenerationService:
             t_cell.font = bold_font
             t_cell.fill = grey_fill
             t_cell.alignment = left_center_align
-
-            # Border for "TERMS:" header
             for c in range(1, 10):
                 ws.cell(row=TERMS_ROW, column=c).border = full_border
 
-            # ---- TERMS ROWS LOOP ----
+            # ---- TERMS ROWS ----
             terms_data = [
                 ("Price:", ""),
                 ("Delivery:", "Stated in Description Column Against Each Item."),
@@ -278,30 +284,25 @@ class ExcelGenerationService:
 
             for i, (label, value) in enumerate(terms_data):
                 r = TERMS_ROW + 1 + i
-
-                # Column A (Label)
                 ws.cell(row=r, column=1, value=label)
                 ws.cell(row=r, column=1).font = bold_font
                 ws.cell(row=r, column=1).alignment = left_center_align
 
-                # Columns B → I (Merged Value)
                 ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=9)
                 ws.cell(row=r, column=2, value=value)
                 ws.cell(row=r, column=2).font = bold_font
                 ws.cell(row=r, column=2).alignment = left_center_align
 
-                # Borders for full row
                 for c in range(1, 10):
                     ws.cell(row=r, column=c).border = full_border
 
             # --- FOOTER MESSAGES ---
             MSG_ROW = TERMS_ROW + len(terms_data) + 2
             ws.merge_cells(start_row=MSG_ROW, start_column=1, end_row=MSG_ROW, end_column=10)
-            ws.cell(row=MSG_ROW, column=1, value="Please revert for clarifications if any.Thank you for providing an opportunity to quote.")
+            ws.cell(row=MSG_ROW, column=1, value="Please revert for clarifications if any. Thank you for providing an opportunity to quote.")
            
-            
             ws.cell(row=MSG_ROW + 3, column=1, value="Best Regards,")
-
+        
             disc_cell = ws.cell(row=MSG_ROW + 6, column=1, value="(This message has been electronically transmitted and does not require a signature).")
             disc_cell.font = italic_small
 
