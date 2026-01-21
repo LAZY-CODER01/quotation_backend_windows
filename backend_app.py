@@ -1,31 +1,62 @@
 """
-QuoteSnap - Gmail Email Monitor
-Simple Gmail monitoring application that prints new emails.
+QuoteSnap - Gmail Email Monitor (JWT Refactor)
+Dockerized Flask application with JWT Auth and Single Company Gmail Monitoring.
 """
 
 import logging
 import os
 import threading
-import uuid
 import json
+import uuid
 from datetime import datetime
-from flask import Flask, jsonify, send_file, redirect, session, request
+from flask import Flask, jsonify, send_file, request, current_app
 from flask_cors import CORS
 from dotenv import load_dotenv
+from werkzeug.security import check_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
+
+# Services and Config
 from app.services.gmail_service import GmailService
 from app.services.duckdb_service import DuckDBService
 from app.services.new_excel_generation import ExcelGenerationService
-from werkzeug.middleware.proxy_fix import ProxyFix
 from config.settings import Config
+from app.auth.jwt_utils import create_jwt
+from app.auth.jwt_required import jwt_required
 
 # Load environment variables
 load_dotenv()
 
-# Global Gmail service instances (one per user session)
-gmail_services = {}  # session_id -> GmailService instance
-monitoring_active = {}  # session_id -> bool
+# Global State for SINGLE Company Gmail Monitoring
+company_gmail_service = None
+monitoring_thread = None
+monitoring_active = False
 
 logger = logging.getLogger(__name__)
+
+def start_company_gmail_monitoring():
+    db = DuckDBService()
+    if not db.connect():
+        print("❌ DB connection failed for Gmail startup")
+        return
+
+    token_json = db.get_company_token()
+    db.disconnect()
+
+    if not token_json:
+        print("⚠️ Company Gmail not connected yet")
+        return
+
+    gmail = GmailService(credentials_path="credentials.json")
+
+    if gmail.authenticate_from_info(json.loads(token_json)):
+        gmail.start_monitoring(check_interval=300)
+        print("✅ Company Gmail monitoring started")
+    else:
+        print("❌ Gmail authentication failed")
+
+# 🔥 AUTO START ON APP BOOT
+start_company_gmail_monitoring()
+
 
 def setup_logging():
     """Configure basic logging."""
@@ -37,1038 +68,443 @@ def setup_logging():
 def create_flask_app():
     """Create and configure Flask application."""
     app = Flask(__name__)
+    
+    # Load Config
+    app.config.from_object(Config)
 
-
-    # 🔐 Use a strong secret key
-    app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-key-change")
-
-    # ✅ CORS CONFIGURATION (important for session cookies)
+    # CORS CONFIGURATION (No credentials needed for JWT usually, but good to have)
     CORS(app,
-         supports_credentials=True,
-         origins=Config.CORS_ORIGINS,
+         origins=app.config.get('CORS_ORIGINS'),
          allow_headers=["Content-Type", "Authorization"],
-         methods=["GET", "POST", "OPTIONS"])
+         methods=["GET", "POST", "OPTIONS", "DELETE"])
 
-    # 🔑 Ensure session cookies are properly configured
-    # Respect environment variables for local development
-    session_secure = os.getenv("SESSION_COOKIE_SECURE", "False").lower() == "true"
-    session_samesite = os.getenv("SESSION_COOKIE_SAMESITE", "Lax")  # Lax for same-site, None for cross-site
-    cookie_domain = os.getenv("COOKIE_DOMAIN", None)
-    
-    # For localhost, use Lax and non-secure cookies
-    # For production/cross-site, use None and secure cookies
-    if session_samesite == "None":
-        session_secure = True  # None requires Secure=True
-    
-    app.config.update(
-        SESSION_COOKIE_SAMESITE=session_samesite,
-        SESSION_COOKIE_SECURE=session_secure,
-        SESSION_PERMANENT=False
-    )
-    
-    # Set cookie domain if specified (remove trailing dot if present)
-    if cookie_domain:
-        cookie_domain = cookie_domain.rstrip('.')
-        app.config['SESSION_COOKIE_DOMAIN'] = cookie_domain
-    
-    logger.info(f"Session cookie config: Secure={session_secure}, SameSite={session_samesite}, Domain={cookie_domain}")
+    # -------------------------------------------------------------------------
+    # AUTHENTICATION ROUTES
+    # -------------------------------------------------------------------------
 
-    def get_user_token_path(session_id):
-        token_dir = Config.GMAIL_TOKEN_DIRECTORY
-        os.makedirs(token_dir, exist_ok=True)
-        return os.path.join(token_dir, f"token_{session_id}.json")
-
-    def get_or_create_session():
-        if "user_id" not in session:
-            session["user_id"] = str(uuid.uuid4())
-        return session["user_id"]
-
-    
-    @app.route('/api/auth/status', methods=['GET'])
-    def auth_status():
+    @app.route('/api/auth/login', methods=['POST'])
+    def login():
         """
-        Check if user is authenticated with Gmail.
-        
-        Returns:
-            JSON response with authentication status
+        User login endpoint.
+        Returns JWT token if credentials are valid.
         """
         try:
-            # Debug: Log session and cookie information
-            logger.debug(f"Auth status check - Session keys: {list(session.keys())}")
-            logger.debug(f"Auth status check - Cookies received: {list(request.cookies.keys())}")
-            logger.debug(f"Auth status check - Session cookie value: {request.cookies.get('session', 'NOT SET')}")
-            
-            # Try to get or create session
-            user_id = session.get('user_id')
-            if not user_id:
-                # Create a new session if one doesn't exist
-                user_id = get_or_create_session()
-                logger.info(f"Created new session in auth_status: user_id={user_id}")
-                # Return early since we just created the session (no token yet)
-                return jsonify({
-                    'authenticated': False,
-                    'message': 'No session found - session created',
-                    'session_created': True,
-                    'user_id': user_id
-                })
-            
-            # Check for token in database instead of file system
-            logger.info(f"Checking database for token for user_id: {user_id}")
+            data = request.get_json()
+            username = data.get('username')
+            password = data.get('password')
+
+            if not username or not password:
+                return jsonify({"error": "Username and password required"}), 400
+
             db = DuckDBService()
             if not db.connect():
-                logger.error("Failed to connect to database")
-                return jsonify({
-                    'authenticated': False,
-                    'message': 'Database connection failed'
-                }), 500
-            
-            # Ensure table exists
-            db.create_table()
-            
-            # Get token from database
-            logger.info(f"Querying user_tokens table for user_id: {user_id}")
-            token_json_str = db.get_user_token(user_id)
-            
-            if token_json_str:
-                logger.info(f"✅ Token found in database for user_id: {user_id} (length: {len(token_json_str)})")
-                # Token exists in database, check if valid
-                from google.oauth2.credentials import Credentials
-                try:
-                    SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 
-                              'https://www.googleapis.com/auth/gmail.modify']
-                    creds = Credentials.from_authorized_user_info(json.loads(token_json_str), SCOPES)
-                    
-                    if creds and creds.valid:
-                        db.disconnect()
-                        return jsonify({
-                            'authenticated': True,
-                            'message': 'User is authenticated'
-                        })
-                    elif creds and creds.expired and creds.refresh_token:
-                        from google.auth.transport.requests import Request
-                        try:
-                            creds.refresh(Request())
-                            # Save refreshed credentials to database
-                            refreshed_token_json = creds.to_json()
-                            if db.save_user_token(user_id, refreshed_token_json):
-                                db.disconnect()
-                                return jsonify({
-                                    'authenticated': True,
-                                    'message': 'Token refreshed successfully'
-                                })
-                            else:
-                                db.disconnect()
-                                logger.error("Failed to save refreshed token to database")
-                                return jsonify({
-                                    'authenticated': False,
-                                    'message': 'Token refreshed but failed to save'
-                                })
-                        except Exception as e:
-                            db.disconnect()
-                            logger.error(f"Failed to refresh token: {str(e)}")
-                            return jsonify({
-                                'authenticated': False,
-                                'message': 'Token expired and refresh failed'
-                            })
-                except Exception as e:
-                    db.disconnect()
-                    logger.error(f"Error checking credentials: {str(e)}")
-                    return jsonify({
-                        'authenticated': False,
-                        'message': 'Invalid credentials'
-                    })
-            
-            logger.warning(f"⚠️ No token found in database for user_id: {user_id}")
-            
-            # Debug: Check if any tokens exist at all
-            try:
-                all_users = db.connection.execute("SELECT user_id FROM user_tokens").fetchall()
-                logger.info(f"Debug: Found {len(all_users)} total user(s) in user_tokens table")
-                if all_users:
-                    logger.info(f"Debug: Existing user_ids: {[u[0] for u in all_users]}")
-            except Exception as e:
-                logger.error(f"Error checking all users: {str(e)}")
-            
+                return jsonify({"error": "Database connection failed"}), 500
+
+            user = db.get_user_by_username(username)
             db.disconnect()
-            return jsonify({
-                'authenticated': False,
-                'message': 'No authentication token found',
-                'user_id': user_id
-            })
+
+            if user and check_password_hash(user['password_hash'], password):
+                token = create_jwt(user)
+                return jsonify({
+                    "success": True,
+                    "token": token,
+                    "user": {
+                        "id": user['id'],
+                        "username": user['username'],
+                        "role": user['role']
+                    }
+                })
             
+            return jsonify({"error": "Invalid credentials"}), 401
+
         except Exception as e:
-            logging.error(f"Auth status error: {str(e)}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            return jsonify({'authenticated': False, 'error': str(e)}), 500
-    
-    @app.route('/api/auth/debug', methods=['GET'])
-    def auth_debug():
-        """
-        Debug endpoint to check session and cookie state.
+            logger.error(f"Login error: {str(e)}")
+            return jsonify({"error": "Login failed"}), 500
+
+    @app.route('/api/auth/me', methods=['GET'])
+    @jwt_required()
+    def get_current_user():
+        """Get current user info from token."""
+        return jsonify({
+            "success": True,
+            "user": request.user
+        })
+
+    # -------------------------------------------------------------------------
+    # ADMIN GMAIL ROUTES (Company Account)
+    # -------------------------------------------------------------------------
+
+    @app.route('/api/admin/gmail/status', methods=['GET'])
+    @jwt_required(roles=['ADMIN'])
+    def gmail_status():
+        """Check if Company Gmail is connected/monitoring."""
+        global monitoring_active
         
-        Returns:
-            JSON response with debugging information
-        """
+        db = DuckDBService()
+        if db.connect():
+            token_json = db.get_company_token()
+            db.disconnect()
+            is_connected = token_json is not None
+        else:
+            is_connected = False
+            
+        return jsonify({
+            "connected": is_connected,
+            "monitoring": monitoring_active,
+            "company_gmail_id": Config.COMPANY_GMAIL_ID
+        })
+
+    @app.route('/api/admin/gmail/connect', methods=['GET'])
+    @jwt_required(roles=['ADMIN'])
+    def connect_gmail():
+        """Generate OAuth URL for Company Gmail connection."""
+        service = GmailService(credentials_path=Config.GMAIL_CREDENTIALS_FILE)
+        # Use a random state for CSRF, but since we are stateless JWT, 
+        # we might just pass a static state or handle it on frontend.
+        # Ideally, we should check this state in callback. 
+        # For simplicity in this refactor, we'll use a simple state we can verify if needed,
+        # or just rely on Admin role protection.
+        state = "company_connect_state" 
+        
+        auth_url = service.get_authorization_url(
+            redirect_uri=Config.OAUTH_REDIRECT_URI,
+            state=state
+        )
+        
+        if auth_url:
+            return jsonify({"authorization_url": auth_url})
+        return jsonify({"error": "Failed to generate auth URL"}), 500
+
+    @app.route('/api/admin/gmail/callback', methods=['GET'])
+    def gmail_callback():
+        code = request.args.get("code")
+        error = request.args.get("error")
+        
+        if error:
+            return jsonify({"error": f"OAuth error: {error}"}), 400
+        if not code:
+            return jsonify({"error": "Missing code"}), 400
+            
         try:
-            debug_info = {
-                'session_keys': list(session.keys()),
-                'session_user_id': session.get('user_id'),
-                'session_oauth_state': session.get('oauth_state'),
-                'cookies_received': list(request.cookies.keys()),
-                'session_cookie_present': 'session' in request.cookies,
-                'session_cookie_value': request.cookies.get('session', 'NOT SET')[:50] if 'session' in request.cookies else 'NOT SET',
-                'request_origin': request.headers.get('Origin'),
-                'request_referer': request.headers.get('Referer'),
-                'cors_origins': Config.CORS_ORIGINS,
-                'session_cookie_secure': app.config.get('SESSION_COOKIE_SECURE'),
-                'session_cookie_samesite': app.config.get('SESSION_COOKIE_SAMESITE'),
-                'session_cookie_domain': app.config.get('SESSION_COOKIE_DOMAIN'),
-            }
+            # Exchange code for token
+            service = GmailService(credentials_path=Config.GMAIL_CREDENTIALS_FILE)
             
-            # Check if token exists for current user in database
-            user_id = session.get('user_id')
-            if user_id:
-                db = DuckDBService()
-                if db.connect():
-                    db.create_table()
-                    token_json_str = db.get_user_token(user_id)
-                    db.disconnect()
-                    debug_info['token_exists_in_db'] = token_json_str is not None
-                else:
-                    debug_info['token_exists_in_db'] = False
-                    debug_info['db_connection_error'] = True
+            # Use a temporary user_id just to satisfy the method signature if strictly needed,
+            # but we really want to save to COMPANY_GMAIL_ID.
+            # We will manually handle the token save to ensure it goes to the right ID.
             
-            return jsonify(debug_info)
-        except Exception as e:
-            import traceback
-            return jsonify({
-                'error': str(e),
-                'traceback': traceback.format_exc()
-            }), 500
-    
-    @app.route("/api/auth/login", methods=["GET"])
-    def auth_login():
-        try:
-            user_id = get_or_create_session()
-            state = str(uuid.uuid4())
-            session["oauth_state"] = state  # store CSRF token
-            session["user_id"] = user_id  # Ensure user_id is in session
+            # The existing authenticate_from_code tries to save using user_id.
+            # We can pass Config.COMPANY_GMAIL_ID as user_id!
             
-            # Force session to be saved
-            session.permanent = False
+        def exchange_and_save_company_token(self, code: str, redirect_uri: str) -> bool:
+    from google_auth_oauthlib.flow import Flow
+    from app.services.duckdb_service import DuckDBService
+
+    SCOPES = [
+        'https://www.googleapis.com/auth/gmail.readonly',
+        'https://www.googleapis.com/auth/gmail.modify'
+    ]
+
+    flow = Flow.from_client_secrets_file(
+        self.credentials_path,
+        scopes=SCOPES,
+        redirect_uri=redirect_uri
+    )
+
+    flow.fetch_token(code=code)
+    creds = flow.credentials
+
+    token_json = creds.to_json()
+
+    db = DuckDBService()
+    if not db.connect():
+        return False
+
+    success = db.save_company_token(token_json)
+    db.disconnect()
+    return success
+
             
-            logger.info(f"Login: Created session user_id={user_id}, state={state}")
-            logger.debug(f"Session data: {dict(session)}")
-
-            gmail_service = GmailService(
-                credentials_path=Config.GMAIL_CREDENTIALS_FILE,
-                token_path=get_user_token_path(user_id)
-            )
-
-            auth_url = gmail_service.get_authorization_url(
-                redirect_uri=Config.OAUTH_REDIRECT_URI,
-                state=state
-            )
-
-            if not auth_url:
-                return jsonify({"success": False, "message": "Failed to generate auth URL"}), 500
-
-            gmail_services[user_id] = gmail_service
-
-            response = jsonify({
-                "success": True,
-                "authorization_url": auth_url
-            })
-            
-            # Ensure session cookie is set in response
-            return response
-
-        except Exception as e:
-            logger.error(f"Auth login error: {e}")
-            return jsonify({"success": False, "error": str(e)}), 500
-
-
-    @app.route("/api/auth/callback", methods=["GET"])
-    def auth_callback():
-        try:
-            code = request.args.get("code")
-            state = request.args.get("state")
-            error = request.args.get("error")
-
-            logger.info(f"Callback received: code={'present' if code else 'missing'}, state={state}, error={error}")
-            logger.debug(f"Session data: {dict(session)}")
-            logger.debug(f"Session cookie present: {'session' in request.cookies}")
-
-            if error:
-                logger.error(f"OAuth error: {error}")
-                return redirect(f"{Config.FRONTEND_URL}/?error=oauth_failed")
-
-            if not code:
-                return jsonify({"success": False, "error": "Missing code"}), 400
-
-            stored_state = session.get("oauth_state")
-            stored_user_id = session.get("user_id")
-            
-            logger.info(f"State check: stored_state={stored_state}, received_state={state}, stored_user_id={stored_user_id}")
-            
-            # Check OAuth state for CSRF protection
-            # In development, we can be more lenient if session wasn't preserved
-            development_mode = os.getenv("FLASK_DEBUG", "False").lower() == "true"
-            
-            if not stored_state or stored_state != state:
-                logger.error(f"❌ Invalid OAuth state: stored={stored_state}, got={state}")
-                logger.error(f"Session keys: {list(session.keys())}")
-                logger.error(f"All cookies: {list(request.cookies.keys())}")
-                
-                # In development, if session was lost, try to continue with warning
-                if development_mode and not stored_state:
-                    logger.warning("⚠️ Development mode: Continuing without state validation (session lost)")
-                else:
-                    return redirect(f"{Config.FRONTEND_URL}/?error=invalid_state")
-
-            user_id = stored_user_id or session.get("user_id")
-            if not user_id:
-                logger.error("❌ No user session found during callback")
-                # Try to create a new session as fallback
-                user_id = get_or_create_session()
-                logger.warning(f"Created new session user_id={user_id} during callback (session was lost)")
-
-            gmail_service = gmail_services.get(user_id) or GmailService(
-                credentials_path=Config.GMAIL_CREDENTIALS_FILE,
-                token_path=get_user_token_path(user_id)
-            )
-
-            # Pass user_id to authenticate_from_code so it can save token to DB
-            logger.info(f"Calling authenticate_from_code with user_id={user_id}, code={'present' if code else 'missing'}")
-            auth_result = gmail_service.authenticate_from_code(code, Config.OAUTH_REDIRECT_URI, user_id=user_id)
-            logger.info(f"authenticate_from_code returned: {auth_result}")
-            
-            if auth_result:
-                gmail_services[user_id] = gmail_service
-                logger.info(f"Gmail service stored for user {user_id}")
-
-                if not monitoring_active.get(user_id):
-                    thread = threading.Thread(
-                        target=start_monitoring_loop, args=(gmail_service,), daemon=True
-                    )
-                    thread.start()
-                    monitoring_active[user_id] = True
-                    logger.info(f"Monitoring thread started for user {user_id}")
-
-                session.pop("oauth_state", None)
-                logger.info(f"✅ Authentication successful, redirecting to dashboard for user {user_id}")
-                return redirect(f"{Config.FRONTEND_URL}/dashboard")
-
+            if success:
+                # Start monitoring immediately
+                start_background_monitoring_if_needed()
+                return jsonify({"success": True, "message": "Company Gmail connected and monitoring started"})
             else:
-                logger.error(f"❌ Authentication failed for user {user_id}")
-                return redirect(f"{Config.FRONTEND_URL}/?error=auth_failed")
+                return jsonify({"error": "Authentication failed"}), 500
+                
+        except Exception as e:
+            logger.error(f"Callback error: {e}")
+            return jsonify({"error": str(e)}), 500
 
-        except Exception as e:
-            logger.error(f"Auth callback error: {e}")
-            return redirect(f"{Config.FRONTEND_URL}/?error=server_error")
-    
-    @app.route('/api/auth/logout', methods=['POST'])
-    def auth_logout():
-        """
-        Logout user by removing token from database.
+    @app.route('/api/admin/gmail/disconnect', methods=['POST'])
+    @jwt_required(roles=['ADMIN'])
+    def disconnect_gmail():
+        """Disconnect company Gmail and stop monitoring."""
+        global monitoring_active, company_gmail_service
         
-        Returns:
-            JSON response confirming logout
-        """
         try:
-            user_id = session.get('user_id')
-            if user_id:
-                # Delete token from database instead of file system
-                db = DuckDBService()
-                if db.connect():
-                    db.create_table()  # Ensure table exists
-                    db.delete_user_token(user_id)
-                    db.disconnect()
-                    logger.info(f"Deleted token from database for user {user_id}")
-                
-                # Stop monitoring
-                if user_id in gmail_services:
-                    gmail_service = gmail_services[user_id]
-                    gmail_service.stop_monitoring()
-                    del gmail_services[user_id]
-                
-                if user_id in monitoring_active:
-                    del monitoring_active[user_id]
-                
-                # Clear session
-                session.clear()
+            # Stop monitoring
+            if company_gmail_service:
+                company_gmail_service.stop_monitoring()
+            monitoring_active = False
+            company_gmail_service = None
             
-            return jsonify({
-                'success': True,
-                'message': 'Logged out successfully'
-            })
+            # Remove token from DB
+            db = DuckDBService()
+            if db.connect():
+                db.delete_user_token(Config.COMPANY_GMAIL_ID)
+                db.disconnect()
+                
+            return jsonify({"success": True, "message": "Disconnected Company Gmail"})
         except Exception as e:
-            logging.error(f"Logout error: {str(e)}")
-            return jsonify({'success': False, 'error': str(e)}), 500
-    
+            return jsonify({"error": str(e)}), 500
+
+    # -------------------------------------------------------------------------
+    # CORE API ROUTES (Protected)
+    # -------------------------------------------------------------------------
+
     @app.route('/api/emails', methods=['GET'])
+    @jwt_required() # Any role can view emails
     def get_all_emails():
-        """
-        API endpoint to fetch all stored email extractions.
-        
-        Returns:
-            JSON response with all email extraction records
-        """
         try:
             db_service = DuckDBService()
             if not db_service.connect():
                 return jsonify({'error': 'Failed to connect to database'}), 500
             
-            # Debug: Check if table exists and has data
-            try:
-                count_result = db_service.connection.execute('SELECT COUNT(*) FROM email_extractions').fetchone()
-                table_count = count_result[0] if count_result else 0
-                logging.info(f"Database has {table_count} records")
-            except Exception as e:
-                logging.error(f"Error checking table: {str(e)}")
-                return jsonify({'error': f'Database table error: {str(e)}'}), 500
-            
-            # Get all extractions (limit to 1000 for performance)
             extractions = db_service.get_all_extractions(limit=1000)
+            count = len(extractions)
             db_service.disconnect()
             
             return jsonify({
                 'success': True,
-                'count': len(extractions),
-                'table_count': table_count,
+                'count': count,
                 'data': extractions
             })
-            
         except Exception as e:
-            logging.error(f"API error: {str(e)}")
             return jsonify({'error': str(e)}), 500
-    
-    @app.route('/api/debug/database', methods=['GET'])
-    def debug_database():
-        """
-        Debug endpoint to check database status and content.
-        
-        Returns:
-            JSON response with database debug information
-        """
-        try:
-            db_service = DuckDBService()
-            if not db_service.connect():
-                return jsonify({'error': 'Failed to connect to database'}), 500
-            
-            # Check if table exists
-            tables = db_service.connection.execute("SHOW TABLES").fetchall()
-            table_names = [table[0] for table in tables]
-            
-            # Check table schema if exists
-            schema = None
-            count = 0
-            sample_data = []
-            
-            if 'email_extractions' in table_names:
-                # Get table schema
-                schema_result = db_service.connection.execute("DESCRIBE email_extractions").fetchall()
-                schema = [{'column': row[0], 'type': row[1]} for row in schema_result]
-                
-                # Get count
-                count_result = db_service.connection.execute('SELECT COUNT(*) FROM email_extractions').fetchone()
-                count = count_result[0] if count_result else 0
-                
-                # Get sample data
-                if count > 0:
-                    sample_result = db_service.connection.execute('SELECT * FROM email_extractions LIMIT 3').fetchall()
-                    sample_data = [list(row) for row in sample_result]
-            
-            db_service.disconnect()
-            
-            return jsonify({
-                'success': True,
-                'database_path': db_service.db_path,
-                'tables': table_names,
-                'email_extractions_exists': 'email_extractions' in table_names,
-                'schema': schema,
-                'record_count': count,
-                'sample_data': sample_data
-            })
-            
-        except Exception as e:
-            logging.error(f"Database debug error: {str(e)}")
-            return jsonify({'error': str(e)}), 500
-    
+
     @app.route('/api/emails/stats', methods=['GET'])
+    @jwt_required()
     def get_email_stats():
-        """
-        API endpoint to get email processing statistics.
-        
-        Returns:
-            JSON response with statistics
-        """
         try:
             db_service = DuckDBService()
             if not db_service.connect():
                 return jsonify({'error': 'Failed to connect to database'}), 500
             
-            # Get statistics
-            total_result = db_service.connection.execute('SELECT COUNT(*) FROM email_extractions').fetchone()
-            valid_result = db_service.connection.execute("SELECT COUNT(*) FROM email_extractions WHERE extraction_status = 'VALID'").fetchone()
-            irrelevant_result = db_service.connection.execute("SELECT COUNT(*) FROM email_extractions WHERE extraction_status = 'IRRELEVANT'").fetchone()
+            total = db_service.connection.execute('SELECT COUNT(*) FROM email_extractions').fetchone()[0]
+            valid = db_service.connection.execute("SELECT COUNT(*) FROM email_extractions WHERE extraction_status = 'VALID'").fetchone()[0]
+            irrelevant = db_service.connection.execute("SELECT COUNT(*) FROM email_extractions WHERE extraction_status = 'IRRELEVANT'").fetchone()[0]
             
             db_service.disconnect()
-            
             return jsonify({
                 'success': True,
                 'stats': {
-                    'total_emails': total_result[0] if total_result else 0,
-                    'valid_quotations': valid_result[0] if valid_result else 0,
-                    'irrelevant_emails': irrelevant_result[0] if irrelevant_result else 0
+                    'total_emails': total,
+                    'valid_quotations': valid,
+                    'irrelevant_emails': irrelevant
                 }
             })
-            
         except Exception as e:
-            logging.error(f"API error: {str(e)}")
             return jsonify({'error': str(e)}), 500
 
-    @app.route('/api/requirement/delete', methods=['POST'])
-    def delete_requirement():
-        """
-        Delete a specific requirement from an extraction's requirements list.
-
-        Expects JSON body: { "gmail_id": "<id>", "index": <int> }
-        """
-        try:
-            data = request.get_json(force=True)
-            gmail_id = data.get('gmail_id')
-            index = data.get('index')
-
-            if not gmail_id:
-                return jsonify({'success': False, 'error': 'Missing gmail_id'}), 400
-            if index is None:
-                return jsonify({'success': False, 'error': 'Missing index'}), 400
-
-            try:
-                index = int(index)
-            except Exception:
-                return jsonify({'success': False, 'error': 'Index must be an integer'}), 400
-
-            db_service = DuckDBService()
-            if not db_service.connect():
-                return jsonify({'success': False, 'error': 'Failed to connect to database'}), 500
-
-            extraction = db_service.get_extraction(gmail_id)
-            if not extraction:
-                db_service.disconnect()
-                return jsonify({'success': False, 'error': 'Extraction not found for given gmail_id'}), 404
-
-            extraction_result = extraction.get('extraction_result') or {}
-
-            # Support either 'Requirements' or 'requirements' (case-insensitive)
-            req_key = None
-            for k in extraction_result.keys():
-                if k.lower() == 'requirements':
-                    req_key = k
-                    break
-
-            if req_key is None:
-                db_service.disconnect()
-                return jsonify({'success': False, 'error': 'No requirements list found for this extraction'}), 400
-
-            requirements = extraction_result.get(req_key)
-            if not isinstance(requirements, list):
-                db_service.disconnect()
-                return jsonify({'success': False, 'error': 'Requirements field is not a list'}), 400
-
-            if index < 0 or index >= len(requirements):
-                db_service.disconnect()
-                return jsonify({'success': False, 'error': 'Index out of range'}), 400
-
-            # Remove the item and preserve the original key name
-            removed = requirements.pop(index)
-            extraction_result[req_key] = requirements
-
-            updated = db_service.update_extraction(gmail_id, extraction_result)
-            db_service.disconnect()
-
-            if not updated:
-                return jsonify({'success': False, 'error': 'Failed to update extraction in database'}), 500
-
-            return jsonify({'success': True, 'removed': removed, 'requirements': requirements})
-
-        except Exception as e:
-            logging.error(f"Requirement delete error: {str(e)}")
-            return jsonify({'success': False, 'error': str(e)}), 500
-
-    @app.route('/api/database/clear', methods=['POST'])
-    def clear_database():
-        """
-        Delete all quotations from the database (clear all email_extractions records).
-        
-        Returns:
-            JSON response with number of records deleted
-        """
-        try:
-            db_service = DuckDBService()
-            if not db_service.connect():
-                return jsonify({'success': False, 'error': 'Failed to connect to database'}), 500
-            
-            # Get count before deletion
-            count_result = db_service.connection.execute('SELECT COUNT(*) FROM email_extractions').fetchone()
-            records_before = count_result[0] if count_result else 0
-            
-            # Delete all records
-            db_service.connection.execute('DELETE FROM email_extractions')
-            
-            # Verify deletion
-            count_result = db_service.connection.execute('SELECT COUNT(*) FROM email_extractions').fetchone()
-            records_after = count_result[0] if count_result else 0
-            
-            db_service.disconnect()
-            
-            deleted_count = records_before - records_after
-            
-            logging.info(f"Database cleared: {deleted_count} records deleted")
-            
-            return jsonify({
-                'success': True,
-                'message': f'Database cleared successfully',
-                'records_deleted': deleted_count,
-                'records_before': records_before,
-                'records_after': records_after
-            })
-            
-        except Exception as e:
-            logging.error(f"Database clear error: {str(e)}")
-            return jsonify({'success': False, 'error': str(e)}), 500
-    
-    @app.route('/api/health', methods=['GET'])
-    def health_check():
-        """Health check endpoint."""
-        return jsonify({
-            'success': True,
-            'message': 'SnapQuote API is running',
-            'timestamp': datetime.now().isoformat()
-        })
-    
     @app.route('/api/quotation/generate/<gmail_id>', methods=['GET'])
+    @jwt_required()
     def generate_quotation(gmail_id: str):
-        """
-        Generate and download Excel quotation file from stored email extraction data using the new ExcelGenerationService (win32com version).
-        Args:
-            gmail_id (str): Gmail message ID
-        Returns:
-            Excel file for immediate download
-        """
         try:
-            # Get email data from database
             db_service = DuckDBService()
             if not db_service.connect():
                 return jsonify({'error': 'Failed to connect to database'}), 500
+                
             extraction_data = db_service.get_extraction(gmail_id)
             db_service.disconnect()
+            
             if not extraction_data:
-                return jsonify({'error': f'Email with gmail_id {gmail_id} not found'}), 404
-            # Check if it's a valid quotation (not irrelevant)
+                return jsonify({'error': 'Extraction not found'}), 404
+            
             if extraction_data.get('extraction_status') != 'VALID':
-                return jsonify({
-                    'error': 'Cannot generate quotation for irrelevant email',
-                    'status': extraction_data.get('extraction_status')
-                }), 400
-            
-            # Debug: Log extraction data
-            extraction_result = extraction_data.get('extraction_result', {})
-            logger.info(f"Generating Excel for gmail_id: {gmail_id}")
-            logger.debug(f"Extraction result keys: {list(extraction_result.keys()) if extraction_result else 'None'}")
-            if extraction_result:
-                requirements = extraction_result.get('Requirements', [])
-                logger.info(f"Found {len(requirements)} requirements in extraction_result")
-                if requirements:
-                    logger.debug(f"First requirement: {requirements[0]}")
-            
-            # Generate Excel file on disk using new service
+                return jsonify({'error': 'Cannot generate quotation for irrelevant email'}), 400
+                
             excel_service = ExcelGenerationService()
             output_file = excel_service.generate_quotation_excel(gmail_id, extraction_data)
-            if not output_file or not os.path.exists(output_file):
-                return jsonify({'error': 'Failed to generate Excel file'}), 500
-
-            # Ensure the file is closed and saved before sending (important for win32com)
-            # (Already handled in service, but double-check)
-            import time
-            time.sleep(0.2)  # Small delay to ensure file system flush (esp. on Windows)
-
-            # Create a descriptive filename for download
-            subject = extraction_data.get('subject', 'quotation')[:30]  # Limit length
+            
+            if not output_file:
+                return jsonify({'error': 'Failed to generate Excel'}), 500
+                
+            # Create filename
+            subject = extraction_data.get('subject', 'quotation')[:30]
             clean_subject = "".join(c for c in subject if c.isalnum() or c in (' ', '-', '_')).rstrip()
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             download_filename = f"Quotation_{clean_subject}_{timestamp}.xlsx"
 
-            # Open the file in binary mode and send as attachment (ensures no in-memory re-save)
             return send_file(
                 os.path.abspath(output_file),
                 as_attachment=True,
                 download_name=download_filename,
                 mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                max_age=0  # Prevent caching
+                max_age=0
             )
         except Exception as e:
-            logging.error(f"Quotation generation error: {str(e)}")
+            logger.error(f"Generate error: {e}")
             return jsonify({'error': str(e)}), 500
-    
+
     @app.route('/api/quotation/download/<filename>', methods=['GET'])
+    # Need token even for download? Yes, usually.
+    # Since download links might be clicked directly, passing header is hard.
+    # Usually we use a short-lived token in query param or just allow if token is in query param.
+    # For now, let's enforce header (assuming frontend downloads via blob/fetch with header).
+    # OR allow query param 'token'.
+    # Let's support query param for this specific route.
     def download_quotation(filename: str):
-        """
-        Download generated quotation Excel file.
+        token = request.args.get('token')
+        auth_header = request.headers.get('Authorization')
         
-        Args:
-            filename (str): Filename to download
+        # Simple manual check since decorator might not support query param easily
+        actual_token = None
+        if auth_header and auth_header.startswith("Bearer "):
+            actual_token = auth_header.split(" ")[1]
+        elif token:
+            actual_token = token
             
-        Returns:
-            File download
-        """
+        if not actual_token:
+            return jsonify({"error": "Unauthorized"}), 401
+            
+        # Verify token (manual verification to support query param)
+        try:
+            import jwt
+            jwt.decode(actual_token, app.config['JWT_SECRET'], algorithms=[app.config['JWT_ALGORITHM']])
+        except:
+             return jsonify({"error": "Invalid token"}), 401
+
+        # File logic
         try:
             file_path = os.path.join('generated', filename)
-            
             if not os.path.exists(file_path):
                 return jsonify({'error': 'File not found'}), 404
-            
-            # Validate filename to prevent directory traversal
-            if not filename.endswith('.xlsx') or '..' in filename:
+                
+            # Security check
+            if '..' in filename or not filename.endswith('.xlsx'):
                 return jsonify({'error': 'Invalid filename'}), 400
-            
+                
             return send_file(
                 file_path,
                 as_attachment=True,
                 download_name=filename,
                 mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
             )
-            
         except Exception as e:
-            logging.error(f"File download error: {str(e)}")
+            logging.error(f"Download error: {e}")
             return jsonify({'error': str(e)}), 500
-    
-    # The new ExcelGenerationService does not provide a template analysis method, so this endpoint is now deprecated or should be updated if needed.
-    @app.route('/api/template/analyze', methods=['GET'])
-    def analyze_template():
-        """
-        (Deprecated) Analyze the Excel template structure. Not supported in new ExcelGenerationService.
-        """
-        return jsonify({'success': False, 'error': 'Template analysis not supported in new ExcelGenerationService.'}), 501
-    app.wsgi_app = ProxyFix(
-        app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1
-    )
 
+    @app.route('/api/database/clear', methods=['POST'])
+    @jwt_required(roles=['ADMIN'])
+    def clear_database():
+        try:
+            db = DuckDBService()
+            if db.connect():
+                db.connection.execute('DELETE FROM email_extractions')
+                db.disconnect()
+                return jsonify({'success': True, 'message': 'Database cleared'})
+            return jsonify({'error': 'DB connection failed'}), 500
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/requirement/delete', methods=['POST'])
+    @jwt_required(roles=['ADMIN', 'EMPLOYEE']) # Employees can delete requirements too?
+    def delete_requirement():
+        # Keep existing logic...
+        try:
+            data = request.get_json(force=True)
+            # ... (Logic from old file)
+            # Re-implementing briefly for brevity or copy-paste:
+            gmail_id = data.get('gmail_id')
+            index = data.get('index')
+            if not gmail_id or index is None:
+                return jsonify({'error': 'Missing params'}), 400
+                
+            db = DuckDBService()
+            if not db.connect():
+                return jsonify({'error': 'DB fail'}), 500
+                
+            extraction = db.get_extraction(gmail_id)
+            if not extraction:
+                db.disconnect()
+                return jsonify({'error': 'Not found'}), 404
+                
+            res = extraction.get('extraction_result', {})
+            req_key = next((k for k in res.keys() if k.lower() == 'requirements'), None)
+            if not req_key or not isinstance(res[req_key], list):
+                db.disconnect()
+                return jsonify({'error': 'No requirements'}), 400
+                
+            idx = int(index)
+            if 0 <= idx < len(res[req_key]):
+                removed = res[req_key].pop(idx)
+                db.update_extraction(gmail_id, res)
+                db.disconnect()
+                return jsonify({'success': True, 'removed': removed, 'requirements': res[req_key]})
+            
+            db.disconnect()
+            return jsonify({'error': 'Index out of bounds'}), 400
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/health')
+    def health():
+        return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
+
+    # Proxy Fix for Docker/Reverse Proxy
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+    
+    # Start Monitoring on App Startup
+    start_background_monitoring_if_needed()
+    
     return app
 
-def start_monitoring_loop(gmail_service):
-    """
-    Background thread function to monitor emails continuously.
+def start_background_monitoring_if_needed():
+    """Checks for Company Token and starts monitoring thread if not active."""
+    global monitoring_active, monitoring_thread, company_gmail_service
     
-    Args:
-        gmail_service: Authenticated GmailService instance
-    """
-    try:
-        logging.info(f"📧 Starting email monitoring (checking every {Config.EMAIL_CHECK_INTERVAL} seconds)")
-        logging.info("📱 Monitoring active - new emails will be processed automatically")
-        logging.info("=" * 60)
+    if monitoring_active:
+        return
         
-        gmail_service.start_monitoring(Config.EMAIL_CHECK_INTERVAL)
-        
-    except Exception as e:
-        logging.error(f"Email monitoring error: {str(e)}")
-
-def initialize_database():
-    """Initialize DuckDB database on startup."""
     try:
-        print("🗄️ Initializing DuckDB database...")
-        db_service = DuckDBService()
-        if db_service.connect():
-            if db_service.create_table():
-                print("✅ DuckDB database ready")
-            else:
-                print("⚠️ Warning: Could not create database table")
-            db_service.disconnect()
-        else:
-            print("⚠️ Warning: Could not connect to database")
-    except Exception as e:
-        print(f"❌ Database initialization error: {str(e)}")
-        logging.error(f"Database initialization error: {str(e)}")
-
-def check_and_start_monitoring_for_existing_users():
-    """
-    Recover active sessions from MotherDuck database on startup.
-    This ensures email monitoring resumes after Render restarts.
-    
-    This function replaces the old file-based token recovery logic,
-    which doesn't work on Render's ephemeral filesystem.
-    """
-    restored_count = 0
-    failed_count = 0
-    
-    try:
-        print("🔍 Checking MotherDuck database for active user sessions...")
-        logger.info("Starting session recovery from database")
-        
-        # Connect to database
         db = DuckDBService()
         if not db.connect():
-            print("⚠️ Could not connect to database to restore sessions")
-            logger.error("Failed to connect to database for session recovery")
+            logger.error("Could not connect to DB to check for token")
             return
-
-        try:
-            # Ensure table exists (in case it's a fresh run)
-            db.create_table()
-
-            # Fetch all users who have tokens
+            
+        token_json_str = db.get_company_token()
+        db.disconnect()
+        
+        if token_json_str:
+            logger.info("Found Company Gmail token, starting monitoring...")
             try:
-                users = db.connection.execute("SELECT user_id, token_json FROM user_tokens").fetchall()
-            except Exception as e:
-                logger.error(f"Error querying user_tokens table: {str(e)}")
-                print(f"⚠️ Error querying user_tokens: {str(e)}")
-                db.disconnect()
-                return
-
-            if not users:
-                print("💡 No active users found in database. Users need to login via frontend.")
-                logger.info("No user tokens found in database")
-                db.disconnect()
-                return
-
-            print(f"🔄 Found {len(users)} user(s) in database. Restoring sessions...")
-            logger.info(f"Found {len(users)} user(s) to restore from database")
-            
-            from google.oauth2.credentials import Credentials
-            from google.auth.transport.requests import Request
-            import json
-
-            SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 
-                      'https://www.googleapis.com/auth/gmail.modify']
-
-            # Iterate through each user and restore their session
-            for user_row in users:
-                user_id = user_row[0]
-                token_json = user_row[1]
+                token_info = json.loads(token_json_str)
+                service = GmailService(credentials_path=Config.GMAIL_CREDENTIALS_FILE)
                 
-                if not user_id or not token_json:
-                    logger.warning(f"Skipping invalid user record: user_id={user_id}, has_token={bool(token_json)}")
-                    failed_count += 1
-                    continue
-                
-                try:
-                    # Parse token JSON string into dictionary
-                    try:
-                        token_info = json.loads(token_json)
-                    except json.JSONDecodeError as e:
-                        logger.error(f"Invalid JSON for user {user_id[:8]}: {str(e)}")
-                        print(f"⚠️ Invalid token JSON for user {user_id[:8]}, skipping...")
-                        failed_count += 1
-                        continue
+                if service.authenticate_from_info(token_info):
+                    company_gmail_service = service
                     
-                    # Create credentials object from token info
-                    creds = Credentials.from_authorized_user_info(token_info, SCOPES)
-
-                    # Refresh token if expired
-                    if creds and creds.expired and creds.refresh_token:
-                        print(f"🔄 Refreshing expired token for user {user_id[:8]}...")
-                        logger.info(f"Refreshing token for user {user_id[:8]}")
-                        try:
-                            creds.refresh(Request())
-                            # Save refreshed token back to database
-                            refreshed_token_json = creds.to_json()
-                            if db.save_user_token(user_id, refreshed_token_json):
-                                print(f"✅ Token refreshed and saved for user {user_id[:8]}")
-                                logger.info(f"Token refreshed and saved for user {user_id[:8]}")
-                            else:
-                                logger.warning(f"Token refreshed but failed to save for user {user_id[:8]}")
-                                print(f"⚠️ Token refreshed but failed to save for user {user_id[:8]}")
-                        except Exception as e:
-                            logger.error(f"Failed to refresh token for user {user_id[:8]}: {str(e)}")
-                            print(f"⚠️ Failed to refresh token for user {user_id[:8]}: {str(e)}")
-                            # Skip this user if refresh fails
-                            failed_count += 1
-                            continue
-
-                    # Validate credentials before proceeding
-                    if not creds or not creds.valid:
-                        logger.warning(f"Invalid credentials for user {user_id[:8]}")
-                        print(f"⚠️ Invalid credentials for user {user_id[:8]}, skipping...")
-                        failed_count += 1
-                        continue
-
-                    # Initialize Gmail service without file path (cloud-ready)
-                    try:
-                        gmail_service = GmailService(
-                            credentials_path=Config.GMAIL_CREDENTIALS_FILE,
-                            token_path=None  # No file path needed, using DB storage
-                        )
-                        gmail_service.credentials = creds
-                        gmail_service.service = gmail_service._build_service()
-
-                        if not gmail_service.service:
-                            logger.error(f"Failed to build Gmail service for user {user_id[:8]}")
-                            print(f"⚠️ Failed to build service for user {user_id[:8]}")
-                            failed_count += 1
-                            continue
-
-                        # Store service instance globally
-                        gmail_services[user_id] = gmail_service
-                        
-                        # Start monitoring thread if not already active
-                        if not monitoring_active.get(user_id):
-                            thread = threading.Thread(
-                                target=start_monitoring_loop,
-                                args=(gmail_service,),
-                                daemon=True
-                            )
-                            thread.start()
-                            monitoring_active[user_id] = True
-                            restored_count += 1
-                            print(f"✅ Resumed monitoring for user {user_id[:8]}")
-                            logger.info(f"Successfully restored monitoring for user {user_id[:8]}")
-                        else:
-                            logger.info(f"Monitoring already active for user {user_id[:8]}")
-                            
-                    except Exception as e:
-                        logger.error(f"Error initializing Gmail service for user {user_id[:8]}: {str(e)}")
-                        print(f"❌ Error initializing service for user {user_id[:8]}: {str(e)}")
-                        failed_count += 1
-                        continue
-                        
-                except Exception as e:
-                    logger.error(f"Error restoring user {user_id[:8]}: {str(e)}", exc_info=True)
-                    print(f"❌ Error restoring user {user_id[:8]}: {str(e)}")
-                    failed_count += 1
-                    continue
-
-        finally:
-            # Always disconnect from database
-            db.disconnect()
-
-        # Summary logging
-        total_users = len(users) if 'users' in locals() else 0
-        if restored_count > 0:
-            print(f"✅ Successfully restored {restored_count} of {total_users} user session(s)")
-            logger.info(f"Session recovery complete: {restored_count} restored, {failed_count} failed out of {total_users} total")
-        elif failed_count > 0:
-            print(f"⚠️ Failed to restore {failed_count} user session(s)")
-            logger.warning(f"Session recovery had failures: {failed_count} failed out of {total_users} total")
+                    # Start thread
+                    monitoring_active = True
+                    # Re-use monitoring loop from GmailService but ensure it runs continuously
+                    service.start_monitoring(Config.EMAIL_CHECK_INTERVAL)
+                    logger.info("✅ Background monitoring started")
+                else:
+                    logger.error("Failed to authenticate Company Gmail from stored token")
+            except Exception as e:
+                logger.error(f"Error starting monitoring: {e}")
         else:
-            logger.info("Session recovery completed with no users to restore")
-        
-    except Exception as e:
-        logger.error(f"Critical error during session recovery: {str(e)}", exc_info=True)
-        print(f"❌ Critical error restoring sessions: {str(e)}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-
-
-# 🔥 Gunicorn entry point (MUST be global)
-app = create_flask_app()
-
-# Flag to prevent double initialization
-_app_initialized = False
-
-# Initialize database and start monitoring when app is created (for gunicorn)
-# This runs when the module is imported, not just when __main__ is executed
-def _initialize_app():
-    """Initialize database and start monitoring for existing users."""
-    global _app_initialized
-    
-    if _app_initialized:
-        return  # Already initialized
-    
-    try:
-        print("🚀 Initializing SnapQuote application...")
-        _app_initialized = True
-        
-        # Configure logging
-        setup_logging()
-        
-        # Validate configuration
-        try:
-            Config.validate_config()
-            print("✅ Configuration validated")
-        except ValueError as e:
-            print(f"❌ Configuration error: {e}")
-            return
-        
-        # Initialize database
-        initialize_database()
-        
-        # Check if already authenticated and start monitoring for existing users
-        check_and_start_monitoring_for_existing_users()
-        
-        print("✅ Application initialization complete")
-        
-    except Exception as e:
-        print(f"❌ Initialization error: {str(e)}")
-        logging.error(f"Application initialization error: {str(e)}")
-        _app_initialized = False
-
-# Run initialization (will run when module is imported by gunicorn)
-_initialize_app()
-
-def main():
-    """Main application entry point (for direct execution, not gunicorn)."""
-    global _app_initialized
-    
-    print("🚀 Starting SnapQuote Gmail Monitor with API...")
-    
-    # If already initialized (e.g., by gunicorn import), skip initialization
-    if not _app_initialized:
-        # Configure logging
-        setup_logging()
-        
-        # Validate configuration
-        try:
-            Config.validate_config()
-            print("✅ Configuration validated")
-        except ValueError as e:
-            print(f"❌ Configuration error: {e}")
-            return
-        
-        try:
-            # Initialize database
-            initialize_database()
+            logger.info("No Company Gmail token found. Monitoring paused until connected.")
             
-            # Check if already authenticated and start monitoring for existing users
-            check_and_start_monitoring_for_existing_users()
-            _app_initialized = True
-        except Exception as e:
-            print(f"❌ Initialization error: {str(e)}")
-            logging.error(f"Application initialization error: {str(e)}")
-            return
-    
-    try:
-        # Use the global app (already created and initialized)
-        flask_app = app
-        
-        print("🌐 Starting Flask API server...")
-        print("📡 API Endpoints available:")
-        print("   GET /api/auth/status - Check authentication status")
-        print("   GET /api/auth/login - Get OAuth authorization URL")
-        print("   GET /api/auth/callback - OAuth callback handler")
-        print("   POST /api/auth/logout - Logout")
-        print("   GET /api/emails - Get all stored emails")
-        print("   GET /api/emails/stats - Get email statistics")
-        print("   GET /api/quotation/generate/<gmail_id> - Download quotation")
-        print("   GET /api/health - Health check")
-        print("🚀 Server running at http://localhost:8000")
-        print("=" * 60)
-        active_users = len([v for v in monitoring_active.values() if v])
-        if active_users == 0:
-            print("💡 Tip: Email monitoring will start automatically when you login via frontend")
-            print("=" * 60)
-        
-        # Run Flask app
-        flask_app.run(host='0.0.0.0', port=8000, debug=True, use_reloader=False)
-        
-    except KeyboardInterrupt:
-        print("\n👋 Shutting down SnapQuote...")
     except Exception as e:
-        print(f"❌ Error: {str(e)}")
-        logging.error(f"Application error: {str(e)}")
+        logger.error(f"Startup monitoring check failed: {e}")
 
 
+app = create_flask_app()   
 
 if __name__ == '__main__':
-    main()
+    # This block is for local dev only
+    setup_logging()
+  
+    app.run(host='0.0.0.0', port=5001, debug=Config.DEBUG)

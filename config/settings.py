@@ -13,51 +13,24 @@ class Config:
     Base configuration class with common settings.
     """
     
-    # Flask Configuration
+    # Flask Configuration (Session usage removed, but KEY kept for other Flask internals if needed)
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production'
     DEBUG = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
     
-    # Gmail API Configuration
-    GMAIL_CREDENTIALS_FILE = os.environ.get('GMAIL_CREDENTIALS_FILE') or 'credentials.json'
-    GMAIL_TOKEN_FILE = os.environ.get('GMAIL_TOKEN_FILE') or 'token.json'
-    GMAIL_SCOPES = [
-        'https://www.googleapis.com/auth/gmail.readonly',
-        'https://www.googleapis.com/auth/gmail.modify'
-    ]
+    # JWT Configuration
+    JWT_SECRET = os.environ.get('JWT_SECRET') or 'your-secret-key-change-in-production'
+    JWT_ALGO= 'HS256'
+    JWT_EXPIRES_HOURS = int(os.environ.get('JWT_EXPIRES_HOURS', '24'))
     
-    # Email Monitoring Configuration
-    EMAIL_CHECK_INTERVAL = int(os.environ.get('EMAIL_CHECK_INTERVAL', '60'))
-    
-    @staticmethod
-    def validate_config():
-        """
-        Validate that all required configuration values are present.
-        """
-        # Only check if credentials file exists
-        if not os.path.exists(Config.GMAIL_CREDENTIALS_FILE):
-            raise ValueError(f"Gmail credentials file not found: {Config.GMAIL_CREDENTIALS_FILE}")
-
-import os
-from dotenv import load_dotenv
-
-# Load environment variables from .env file
-load_dotenv()
-
-class Config:
-    """
-    Base configuration class with common settings.
-    """
-    
-    # Flask Configuration
-    SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production'
-    DEBUG = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+    # Company Gmail Configuration
+    COMPANY_GMAIL_ID = 'demo.snapquote@gmail.com'
     
     # CORS Configuration
     CORS_ORIGINS = os.environ.get('CORS_ORIGINS', 'http://localhost:5173,http://localhost:3000').split(',')
     FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
     
     # OAuth Redirect Configuration
-    OAUTH_REDIRECT_URI = os.environ.get('OAUTH_REDIRECT_URI', 'http://localhost:5000/api/auth/callback')
+    OAUTH_REDIRECT_URI = os.environ.get('OAUTH_REDIRECT_URI', 'http://localhost:5000/api/admin/gmail/callback')
     
     # Database Configuration
     DATABASE_URL = os.environ.get('DATABASE_URL') or 'sqlite:///database/quotesnap.db'

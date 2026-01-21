@@ -31,6 +31,7 @@ from app.services.ai_email_extraction import extract_hardware_quotation_details
 from app.services.duckdb_service import DuckDBService
 
 # File processing utilities
+from config.settings import Config
 from utils import process_attachment
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,13 @@ class GmailService:
             if creds and creds.expired and creds.refresh_token:
                 try:
                     creds.refresh(Request())
+                    db = DuckDBService()
+                    if db.connect():
+                       db.save_user_token(
+                          Config.COMPANY_GMAIL_ID,
+                        creds.to_json()
+                                      )
+                       db.disconnect()
                 except Exception as e:
                     logger.error(f"Failed to refresh credentials: {str(e)}")
                     return False
@@ -297,6 +305,50 @@ class GmailService:
             
         except Exception as e:
             logger.error(f"Failed to authenticate from token: {str(e)}")
+            return False
+
+    def authenticate_from_info(self, token_info: dict) -> bool:
+        """
+        Authenticate using token dictionary (from DB).
+        
+        Args:
+            token_info (dict): Token dictionary
+            
+        Returns:
+            bool: True if authentication successful
+        """
+        SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 
+                  'https://www.googleapis.com/auth/gmail.modify']
+        
+        try:
+            creds = Credentials.from_authorized_user_info(token_info, SCOPES)
+            
+            # Refresh if needed
+            if creds and creds.expired and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                    # Note: Caller is responsible for saving refreshed token to DB if needed
+                    # We can perhaps return the new token? For now, let's just use it in memory.
+                except Exception as e:
+                    logger.error(f"Failed to refresh credentials: {str(e)}")
+                    return False
+            
+            if not creds or not creds.valid:
+                logger.error("Invalid credentials from info")
+                return False
+            
+            # Build Gmail service
+            self.service = build('gmail', 'v1', credentials=creds)
+            self.credentials = creds
+            logger.info("Gmail API authentication successful from info")
+            
+            # Initialize required labels
+            self._initialize_labels()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to authenticate from info: {str(e)}")
             return False
     
     def _build_service(self):
