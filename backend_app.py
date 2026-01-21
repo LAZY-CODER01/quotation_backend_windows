@@ -196,34 +196,11 @@ def create_flask_app():
             # The existing authenticate_from_code tries to save using user_id.
             # We can pass Config.COMPANY_GMAIL_ID as user_id!
             
-        def exchange_and_save_company_token(self, code: str, redirect_uri: str) -> bool:
-    from google_auth_oauthlib.flow import Flow
-    from app.services.duckdb_service import DuckDBService
-
-    SCOPES = [
-        'https://www.googleapis.com/auth/gmail.readonly',
-        'https://www.googleapis.com/auth/gmail.modify'
-    ]
-
-    flow = Flow.from_client_secrets_file(
-        self.credentials_path,
-        scopes=SCOPES,
-        redirect_uri=redirect_uri
-    )
-
-    flow.fetch_token(code=code)
-    creds = flow.credentials
-
-    token_json = creds.to_json()
-
-    db = DuckDBService()
-    if not db.connect():
-        return False
-
-    success = db.save_company_token(token_json)
-    db.disconnect()
-    return success
-
+            success = service.authenticate_from_code(
+                code=code, 
+                redirect_uri=Config.OAUTH_REDIRECT_URI, 
+                user_id=Config.COMPANY_GMAIL_ID
+            )
             
             if success:
                 # Start monitoring immediately
