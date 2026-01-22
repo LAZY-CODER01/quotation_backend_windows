@@ -48,7 +48,7 @@ class Config:
     OPENAI_MODEL = os.environ.get('OPENAI_MODEL') or 'gpt-3.5-turbo'
     
     # Email Monitoring Configuration
-    EMAIL_CHECK_INTERVAL = int(os.environ.get('EMAIL_CHECK_INTERVAL', '300'))  # 5 minutes
+    EMAIL_CHECK_INTERVAL = int(os.environ.get('EMAIL_CHECK_INTERVAL', '30'))  # 30 seconds
     MAX_EMAILS_PER_CHECK = int(os.environ.get('MAX_EMAILS_PER_CHECK', '50'))
     
     # File Storage Configuration

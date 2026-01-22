@@ -45,7 +45,7 @@ services:
       # ------------------------------------------------------------------
       GMAIL_CREDENTIALS_FILE: credentials.json
       GMAIL_TOKEN_DIRECTORY: tokens
-      EMAIL_CHECK_INTERVAL: 300
+      EMAIL_CHECK_INTERVAL: 30
       MAX_EMAILS_PER_CHECK: 50
 
       # ------------------------------------------------------------------

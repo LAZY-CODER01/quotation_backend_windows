@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from werkzeug.security import check_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-# Services and Config
+# Services and Config cdc
 from app.services.gmail_service import GmailService
 from app.services.duckdb_service import DuckDBService
 from app.services.new_excel_generation import ExcelGenerationService
@@ -39,6 +39,7 @@ def start_company_gmail_monitoring():
         print("❌ DB connection failed for Gmail startup")
         return
 
+    # Check for company token (ID=1)
     token_json = db.get_company_token()
     db.disconnect()
 
@@ -46,16 +47,21 @@ def start_company_gmail_monitoring():
         print("⚠️ Company Gmail not connected yet")
         return
 
-    gmail = GmailService(credentials_path="credentials.json")
+    gmail = GmailService(credentials_path=Config.GMAIL_CREDENTIALS_FILE)
 
-    if gmail.authenticate_from_info(json.loads(token_json)):
-        gmail.start_monitoring(check_interval=300)
-        print("✅ Company Gmail monitoring started")
-    else:
-        print("❌ Gmail authentication failed")
+    try:
+        if gmail.authenticate_from_info(json.loads(token_json)):
+             # Only start if auth success
+            interval = Config.EMAIL_CHECK_INTERVAL
+            gmail.start_monitoring(check_interval=interval)
+            print(f"✅ Company Gmail monitoring started with {interval}s interval")
+        else:
+            print("❌ Gmail authentication failed (Initial Startup)")
+    except Exception as e:
+        print(f"❌ Error starting Gmail monitoring: {e}")
 
 # 🔥 AUTO START ON APP BOOT
-start_company_gmail_monitoring()
+# 🔥 AUTO START moved to create_flask_app
 
 
 def setup_logging():
@@ -177,6 +183,7 @@ def create_flask_app():
 
     @app.route('/api/admin/gmail/callback', methods=['GET'])
     def gmail_callback():
+        # 1. Read 'code' and 'error' from query params
         code = request.args.get("code")
         error = request.args.get("error")
         
@@ -186,28 +193,23 @@ def create_flask_app():
             return jsonify({"error": "Missing code"}), 400
             
         try:
-            # Exchange code for token
+            # 2. Exchange code for Company Token
             service = GmailService(credentials_path=Config.GMAIL_CREDENTIALS_FILE)
             
-            # Use a temporary user_id just to satisfy the method signature if strictly needed,
-            # but we really want to save to COMPANY_GMAIL_ID.
-            # We will manually handle the token save to ensure it goes to the right ID.
-            
-            # The existing authenticate_from_code tries to save using user_id.
-            # We can pass Config.COMPANY_GMAIL_ID as user_id!
-            
-            success = service.authenticate_from_code(
+            # This method saves the token to DB (id=1) 
+            success = service.exchange_and_save_company_token(
                 code=code, 
-                redirect_uri=Config.OAUTH_REDIRECT_URI, 
-                user_id=Config.COMPANY_GMAIL_ID
+                redirect_uri=Config.OAUTH_REDIRECT_URI
             )
             
             if success:
-                # Start monitoring immediately
-                start_background_monitoring_if_needed()
+                # 3. Start monitoring immediately
+                if not service.monitoring_active:
+                     service.start_monitoring(Config.EMAIL_CHECK_INTERVAL)
+                
                 return jsonify({"success": True, "message": "Company Gmail connected and monitoring started"})
             else:
-                return jsonify({"error": "Authentication failed"}), 500
+                return jsonify({"error": "Authentication/Token Exchange failed"}), 500
                 
         except Exception as e:
             logger.error(f"Callback error: {e}")
@@ -424,7 +426,91 @@ def create_flask_app():
             return jsonify({'error': 'Index out of bounds'}), 400
         except Exception as e:
             return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/ticket/update-priority', methods=['POST'])
+    @jwt_required()
+    def update_priority():
+        try:
+            data = request.get_json()
+            ticket_number = data.get('ticket_number')
+            priority = data.get('priority')
 
+            if not ticket_number or priority not in ['NORMAL', 'URGENT']:
+                return jsonify({'error': 'Invalid parameters'}), 400
+
+            db = DuckDBService()
+            if db.connect():
+                success = db.update_ticket_priority(ticket_number, priority)
+                db.disconnect()
+                
+                if success:
+                    return jsonify({'success': True, 'priority': priority})
+                else:
+                    return jsonify({'error': 'Failed to update priority'}), 500
+            
+            return jsonify({'error': 'Database connection failed'}), 500
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/ticket/update-status', methods=['POST'])
+    @jwt_required()
+    def update_status():
+        try:
+            data = request.get_json()
+            ticket_number = data.get('ticket_number')
+            status = data.get('status')
+
+            if not ticket_number or not status:
+                return jsonify({'error': 'Invalid parameters'}), 400
+
+            db = DuckDBService()
+            if db.connect():
+                success = db.update_ticket_status(ticket_number, status)
+                db.disconnect()
+                
+                if success:
+                    return jsonify({'success': True, 'status': status})
+                else:
+                    return jsonify({'error': 'Failed to update status'}), 500
+            
+            return jsonify({'error': 'Database connection failed'}), 500
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500 
+    @app.route('/api/ticket/update-requirements', methods=['POST'])
+    @jwt_required()
+    def update_requirements():
+        try:
+            data = request.get_json()
+            gmail_id = data.get('gmail_id')
+            new_requirements = data.get('requirements') # List of items
+
+            if not gmail_id or new_requirements is None:
+                return jsonify({'error': 'Invalid data'}), 400
+
+            db = DuckDBService()
+            if db.connect():
+                # 1. Fetch existing record to preserve other data
+                extraction = db.get_extraction(gmail_id)
+                if not extraction:
+                    db.disconnect()
+                    return jsonify({'error': 'Ticket not found'}), 404
+
+                # 2. Update ONLY the requirements list inside the JSON
+                current_result = extraction.get('extraction_result', {})
+                current_result['Requirements'] = new_requirements
+                
+                # 3. Save to DB
+                success = db.update_extraction(gmail_id, current_result)
+                db.disconnect()
+                
+                if success:
+                    return jsonify({'success': True})
+                else:
+                    return jsonify({'error': 'Failed to save'}), 500
+            
+            return jsonify({'error': 'DB connection failed'}), 500
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500       
     @app.route('/api/health')
     def health():
         return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
@@ -433,49 +519,12 @@ def create_flask_app():
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
     
     # Start Monitoring on App Startup
-    start_background_monitoring_if_needed()
+    # Start Monitoring on App Startup
+    start_company_gmail_monitoring()
     
     return app
 
-def start_background_monitoring_if_needed():
-    """Checks for Company Token and starts monitoring thread if not active."""
-    global monitoring_active, monitoring_thread, company_gmail_service
     
-    if monitoring_active:
-        return
-        
-    try:
-        db = DuckDBService()
-        if not db.connect():
-            logger.error("Could not connect to DB to check for token")
-            return
-            
-        token_json_str = db.get_company_token()
-        db.disconnect()
-        
-        if token_json_str:
-            logger.info("Found Company Gmail token, starting monitoring...")
-            try:
-                token_info = json.loads(token_json_str)
-                service = GmailService(credentials_path=Config.GMAIL_CREDENTIALS_FILE)
-                
-                if service.authenticate_from_info(token_info):
-                    company_gmail_service = service
-                    
-                    # Start thread
-                    monitoring_active = True
-                    # Re-use monitoring loop from GmailService but ensure it runs continuously
-                    service.start_monitoring(Config.EMAIL_CHECK_INTERVAL)
-                    logger.info("✅ Background monitoring started")
-                else:
-                    logger.error("Failed to authenticate Company Gmail from stored token")
-            except Exception as e:
-                logger.error(f"Error starting monitoring: {e}")
-        else:
-            logger.info("No Company Gmail token found. Monitoring paused until connected.")
-            
-    except Exception as e:
-        logger.error(f"Startup monitoring check failed: {e}")
 
 
 app = create_flask_app()   
