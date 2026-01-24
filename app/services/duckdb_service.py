@@ -3,6 +3,7 @@ import os
 import logging
 import json
 from datetime import datetime
+import uuid
 from config.settings import Config
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,8 @@ class DuckDBService:
                     ticket_status VARCHAR DEFAULT 'INBOX',
                     ticket_priority VARCHAR DEFAULT 'NORMAL',
                     quotation_files JSON DEFAULT '[]',
+                    cpo_files JSON DEFAULT '[]',
+                    activity_logs JSON DEFAULT '[]',
                     quotation_amount VARCHAR,
                     sender VARCHAR,
                     received_at TIMESTAMP,
@@ -80,10 +83,13 @@ class DuckDBService:
             self._ensure_column_exists("email_extractions", "ticket_status", "VARCHAR DEFAULT 'INBOX'")
             self._ensure_column_exists("email_extractions", "ticket_priority", "VARCHAR DEFAULT 'NORMAL'")
             self._ensure_column_exists("email_extractions", "updated_at", "TIMESTAMP")
-
+            self._ensure_column_exists("email_extractions", "cpo_files", "JSON DEFAULT '[]'")
+            self._ensure_column_exists("email_extractions", "internal_notes", "JSON DEFAULT '[]'")
+            self._ensure_column_exists("email_extractions", "activity_logs", "JSON DEFAULT '[]'")
             self.connection.execute("CREATE TABLE IF NOT EXISTS user_tokens (user_id VARCHAR PRIMARY KEY, token_json JSON, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
-            self.connection.execute("CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), username VARCHAR UNIQUE, password_hash VARCHAR, role VARCHAR DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+            self.connection.execute("CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), username VARCHAR UNIQUE, password_hash VARCHAR,employee_code VARCHAR UNIQUE, role VARCHAR DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
             self.connection.execute("CREATE TABLE IF NOT EXISTS company_tokens (id INTEGER PRIMARY KEY, token_json TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+            self._ensure_column_exists("users", "employee_code", "VARCHAR")
            
 
            
@@ -196,8 +202,8 @@ class DuckDBService:
             # ✅ FIX: Added quotation_files and quotation_amount to the list
             cols = """
                 id, gmail_id, ticket_number, ticket_status, ticket_priority, 
-                quotation_files, quotation_amount,
-                sender, received_at, subject, body_text, 
+                quotation_files,cpo_files, quotation_amount,
+                sender, received_at, subject, body_text, internal_notes, activity_logs,
                 extraction_result, extraction_status, updated_at, created_at
             """
             
@@ -213,12 +219,12 @@ class DuckDBService:
                 item = dict(zip(col_names, row))
                 
                 # Parse JSON fields safely
-                for field in ['extraction_result', 'quotation_files']:
+                for field in ['extraction_result', 'quotation_files','cpo_files','internal_notes', 'activity_logs']:
                     if isinstance(item.get(field), str):
                         try:
                             item[field] = json.loads(item[field])
                         except:
-                            item[field] = [] if field == 'quotation_files' else {}
+                            item[field] = [] if field in ['quotation_files', 'cpo_files','internal_notes', 'activity_logs'] else {}
                             
                 extractions.append(item)
             return extractions
@@ -232,7 +238,7 @@ class DuckDBService:
             cols = """
                 id, gmail_id, ticket_number, ticket_status, ticket_priority, 
                 quotation_files, quotation_amount,
-                sender, received_at, subject, body_text, 
+                sender, received_at, subject, body_text, internal_notes, activity_logs,
                 extraction_result, extraction_status, updated_at, created_at
             """
 
@@ -247,12 +253,12 @@ class DuckDBService:
             item = dict(zip(col_names, result))
             
             # Parse JSON fields safely
-            for field in ['extraction_result', 'quotation_files']:
+            for field in ['extraction_result', 'quotation_files','cpo_files','internal_notes', 'activity_logs']:
                 if isinstance(item.get(field), str):
                     try:
                         item[field] = json.loads(item[field])
                     except:
-                        item[field] = [] if field == 'quotation_files' else {}
+                        item[field] = [] if field in ['quotation_files', 'cpo_files','internal_notes', 'activity_logs'] else {}
                         
             return item
         except Exception as e:
@@ -309,27 +315,39 @@ class DuckDBService:
 
     def get_user_by_username(self, username):
         try:
-            q = "SELECT id, username, password_hash, role FROM users WHERE username = ?"
+            # ✅ Fetch employee_code as well
+            q = "SELECT id, username, password_hash, role, employee_code FROM users WHERE username = ?"
             row = self.connection.execute(q, [username]).fetchone()
             if not row: return None
             return {
                 "id": str(row[0]),
                 "username": row[1],
                 "password_hash": row[2],
-                "role": row[3]
+                "role": row[3],
+                "employee_code": row[4] 
             }
         except Exception as e:
             logger.error(f"Error getting user by username: {str(e)}")
             return None
 
-    def create_user(self, username, password_hash, role='user'):
+    def create_user(self, username, password_hash, employee_code, role='user'):
         try:
+            # Check if username or employee_code already exists
+            check = self.connection.execute(
+                "SELECT 1 FROM users WHERE username = ? OR employee_code = ?", 
+                [username, employee_code]
+            ).fetchone()
+            
+            if check:
+                logger.warning(f"User creation failed: Username '{username}' or Code '{employee_code}' already exists.")
+                return None
+
             q = """
-                INSERT INTO users (username, password_hash, role) 
-                VALUES (?, ?, ?)
+                INSERT INTO users (username, password_hash, employee_code, role) 
+                VALUES (?, ?, ?, ?)
                 RETURNING id
             """
-            result = self.connection.execute(q, [username, password_hash, role]).fetchone()
+            result = self.connection.execute(q, [username, password_hash, employee_code, role]).fetchone()
             self.connection.commit()
             if result: return str(result[0])
             return None
@@ -370,7 +388,7 @@ class DuckDBService:
             logger.error(f"Error deleting company token: {str(e)}")
             return False
     
-    def update_ticket_priority(self, ticket_number, new_priority):
+    def update_ticket_priority(self, gmail_id, new_priority):
         """Update the priority of a ticket (NORMAL <-> URGENT)."""
         try:
             valid_priorities = ['NORMAL', 'URGENT']
@@ -381,8 +399,8 @@ class DuckDBService:
             self.connection.execute("""
                 UPDATE email_extractions 
                 SET ticket_priority = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE ticket_number = ?
-            """, [new_priority, ticket_number])
+                WHERE gmail_id = ?
+            """, [new_priority, gmail_id])
             self.connection.commit()
             return True
         except Exception as e:
@@ -440,4 +458,92 @@ class DuckDBService:
         except Exception as e:
             logger.error(f"Error updating file amount: {e}")
             return False    
-    
+    def add_cpo_file(self, gmail_id, file_metadata):
+      try:
+        row = self.connection.execute("SELECT cpo_files FROM email_extractions WHERE gmail_id = ?", [gmail_id]).fetchone()
+        if not row: return False
+        
+        existing_files = []
+        if row[0]:
+            try:
+                existing_files = json.loads(row[0])
+                if not isinstance(existing_files, list): existing_files = []
+            except:
+                existing_files = []
+
+        existing_files.append(file_metadata)
+        
+        self.connection.execute(
+            "UPDATE email_extractions SET cpo_files = ?, updated_at = CURRENT_TIMESTAMP WHERE gmail_id = ?", 
+            [json.dumps(existing_files), gmail_id]
+        )
+        self.connection.commit()
+        return True
+      except Exception as e:
+        logger.error(f"Error adding CPO file: {e}")
+        return False
+    def add_internal_note(self, gmail_id, note_data):
+        try:
+            row = self.connection.execute("SELECT internal_notes FROM email_extractions WHERE gmail_id = ?", [gmail_id]).fetchone()
+            if not row: return False
+            
+            existing_notes = []
+            if row[0]:
+                try:
+                    existing_notes = json.loads(row[0])
+                    if not isinstance(existing_notes, list): existing_notes = []
+                except:
+                    existing_notes = []
+
+            # Append new note
+            existing_notes.append(note_data)
+            
+            self.connection.execute(
+                "UPDATE email_extractions SET internal_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE gmail_id = ?", 
+                [json.dumps(existing_notes), gmail_id]
+            )
+            self.connection.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error adding note: {e}")
+            return False  
+
+    def add_activity_log(self, gmail_id, action, description, user, metadata=None):
+        """
+        Appends a new log entry to the activity_logs JSON list.
+        """
+        try:
+            # 1. Fetch existing logs
+            row = self.connection.execute("SELECT activity_logs FROM email_extractions WHERE gmail_id = ?", [gmail_id]).fetchone()
+            if not row: return False
+            
+            existing_logs = []
+            if row[0]:
+                try:
+                    existing_logs = json.loads(row[0])
+                    if not isinstance(existing_logs, list): existing_logs = []
+                except:
+                    existing_logs = []
+
+            # 2. Create new log entry
+            log_entry = {
+                "id": str(uuid.uuid4()),
+                "action": action,
+                "description": description,
+                "user": user,
+                "timestamp": datetime.now().isoformat(),
+                "metadata": metadata or {}
+            }
+
+            # 3. Append and save
+            existing_logs.append(log_entry)
+            
+            self.connection.execute(
+                "UPDATE email_extractions SET activity_logs = ? WHERE gmail_id = ?", 
+                [json.dumps(existing_logs), gmail_id]
+            )
+            self.connection.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error adding activity log: {e}")
+            return False  

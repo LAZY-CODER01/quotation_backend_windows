@@ -14,7 +14,7 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.security import check_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
-
+from werkzeug.security import generate_password_hash
 # Services and Config cdc
 from app.services.gmail_service import GmailService
 from app.services.duckdb_service import DuckDBService
@@ -437,20 +437,31 @@ def create_flask_app():
     def update_priority():
         try:
             data = request.get_json()
-            ticket_number = data.get('ticket_number')
+            gmail_id = data.get('gmail_id')
             priority = data.get('priority')
 
-            if not ticket_number or priority not in ['NORMAL', 'URGENT']:
+            if not gmail_id or priority not in ['NORMAL', 'URGENT']:
                 return jsonify({'error': 'Invalid parameters'}), 400
 
             db = DuckDBService()
             if db.connect():
-                success = db.update_ticket_priority(ticket_number, priority)
-                db.disconnect()
-                
+                success = db.update_ticket_priority(gmail_id, priority)
                 if success:
+                    # ✅ Log Activity
+                    try:
+                        db.add_activity_log(
+                            gmail_id, 
+                            "PRIORITY_CHANGE", 
+                            f"Priority changed to {priority}", 
+                            request.user.get('username', 'System')
+                        )
+                    except Exception as log_err:
+                        logger.error(f"Logging failed: {log_err}")
+                        
+                    db.disconnect() # 👈 Disconnect AFTER logging
                     return jsonify({'success': True, 'priority': priority})
                 else:
+                    db.disconnect()
                     return jsonify({'error': 'Failed to update priority'}), 500
             
             return jsonify({'error': 'Database connection failed'}), 500
@@ -462,21 +473,38 @@ def create_flask_app():
     def update_status():
         try:
             data = request.get_json()
-            ticket_number = data.get('ticket_number')
+            gmail_id = data.get('gmail_id')
             status = data.get('status')
 
-            if not ticket_number or not status:
+            if not gmail_id or not status:
                 return jsonify({'error': 'Invalid parameters'}), 400
 
             db = DuckDBService()
             if db.connect():
-                success = db.update_ticket_status(ticket_number, status)
+                db.connection.execute("""
+                    UPDATE email_extractions 
+                    SET ticket_status = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE gmail_id = ?
+                """, [status, gmail_id])
+                
+                
+                
+                db.connection.commit()
+
+                # ✅ Log Activity
+                try:
+                    db.add_activity_log(
+                        gmail_id, 
+                        "STATUS_CHANGE", 
+                        f"Status changed to {status}", 
+                        request.user.get('username', 'System')
+                    )
+                except Exception as log_err:
+                    logger.error(f"Logging failed: {log_err}")
+
                 db.disconnect()
                 
-                if success:
-                    return jsonify({'success': True, 'status': status})
-                else:
-                    return jsonify({'error': 'Failed to update status'}), 500
+                return jsonify({'success': True, 'status': status})
             
             return jsonify({'error': 'Database connection failed'}), 500
         except Exception as e:
@@ -538,6 +566,7 @@ def create_flask_app():
             
             file = request.files['file']
             gmail_id = request.form.get('gmail_id')
+            amount = request.form.get('amount', '')
             
             if file.filename == '' or not gmail_id:
                 return jsonify({'error': 'No selected file or Ticket ID'}), 400
@@ -568,7 +597,7 @@ def create_flask_app():
                 "id": file_id,
                 "name": filename,
                 "url": file_url,      # Cloudinary URL
-                "amount": "", 
+                "amount": amount,
                 "uploaded_at": datetime.now().isoformat()
             }
 
@@ -576,15 +605,168 @@ def create_flask_app():
             db = DuckDBService()
             if db.connect():
                 success = db.add_quotation_file(gmail_id, file_data)
-                db.disconnect()
                 if success:
+                    # ✅ Log Activity
+                    try:
+                        db.add_activity_log(
+                            gmail_id, 
+                            "QUOTATION_UPLOAD", 
+                            f"Uploaded quotation: {filename}", 
+                            request.user.get('username', 'System'),
+                            metadata={"file_id": file_id, "amount": amount}
+                        )
+                    except Exception as log_err:
+                        logger.error(f"Logging failed: {log_err}")
+
+                    db.disconnect() # 👈 Disconnect AFTER logging
                     return jsonify({'success': True, 'file': file_data})
             
+            db.disconnect()
             return jsonify({'error': 'Database save failed'}), 500
             
         except Exception as e:
             # logger.error(f"Upload error: {e}")
-            return jsonify({'error': str(e)}), 500        
+            return jsonify({'error': str(e)}), 500  
+    @app.route('/api/ticket/upload-cpo', methods=['POST'])
+    @jwt_required()
+    def upload_cpo_file():
+       try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file part'}), 400
+        
+        file = request.files['file']
+        gmail_id = request.form.get('gmail_id')
+        po_number = request.form.get('po_number', '') # 👈 Capture PO Number
+        
+        if file.filename == '' or not gmail_id:
+            return jsonify({'error': 'No selected file or Ticket ID'}), 400
+
+        filename = secure_filename(file.filename)
+        unique_id = uuid.uuid4().hex
+        # Save to a specific CPO folder in cloud
+        folder_path = f"snapquote/cpo/{gmail_id}" 
+        
+        storage = StorageService()
+        file_url = storage.upload_file(file, folder=folder_path, public_id=unique_id)
+
+        if not file_url:
+            return jsonify({'error': 'Cloud upload failed'}), 500
+
+        file_id = str(uuid.uuid4())
+        file_data = {
+            "id": file_id,
+            "name": filename,
+            "url": file_url,
+            "po_number": po_number,
+            "uploaded_at": datetime.now().isoformat()
+        }
+
+        db = DuckDBService()
+        if db.connect():
+            success = db.add_cpo_file(gmail_id, file_data)
+            if success:
+                # ✅ Log Activity
+                try:
+                    db.add_activity_log(
+                        gmail_id, 
+                        "CPO_UPLOAD", 
+                        f"Uploaded CPO: {filename}", 
+                        request.user.get('username', 'System'),
+                        metadata={"file_id": file_id, "po_number": po_number}
+                    )
+                except Exception as log_err:
+                    logger.error(f"Logging failed: {log_err}")
+
+                db.disconnect() # 👈 Disconnect AFTER logging
+                return jsonify({'success': True, 'file': file_data})
+        
+        db.disconnect()
+        return jsonify({'error': 'Database save failed'}), 500
+        
+       except Exception as e:
+        return jsonify({'error': str(e)}), 500    
+    # Inside app.py
+
+    @app.route('/api/ticket/add-note', methods=['POST'])
+    @jwt_required()
+    def add_internal_note():
+        try:
+            data = request.get_json()
+            gmail_id = data.get('gmail_id')
+            text = data.get('text')
+            
+            if not gmail_id or not text:
+                return jsonify({'error': 'Missing gmail_id or text'}), 400
+
+            # Create Note Object
+            note_data = {
+                "id": str(uuid.uuid4()),
+                "text": text,
+                "author": request.user.get('username', 'Unknown'), # Get username from JWT
+                "created_at": datetime.now().isoformat()
+            }
+
+            db = DuckDBService()
+            if db.connect():
+                success = db.add_internal_note(gmail_id, note_data)
+                if success:
+                    # ✅ Log Activity
+                    try:
+                        db.add_activity_log(
+                            gmail_id, 
+                            "NOTE_ADDED", 
+                            "Internal note added", 
+                            request.user.get('username', 'System'),
+                            metadata={"note_id": note_data['id']}
+                        )
+                    except Exception as log_err:
+                        logger.error(f"Logging failed: {log_err}")
+                    
+                    db.disconnect() # 👈 Disconnect AFTER logging
+                    return jsonify({'success': True, 'note': note_data})
+            
+            db.disconnect()
+            return jsonify({'error': 'Database connection failed'}), 500
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500   
+    @app.route('/api/admin/create-user', methods=['POST'])
+    @jwt_required(roles=['ADMIN']) # 👈 Ensures only Admins can access this
+    def create_user():
+        try:
+            data = request.get_json()
+            username = data.get('username')
+            password = data.get('password')
+            employee_code = data.get('employee_code')
+            role = data.get('role', 'user') # Default to 'user' if not specified
+
+            # Validation
+            if not all([username, password, employee_code]):
+                return jsonify({'error': 'Username, Password, and Employee Code are required'}), 400
+
+            db = DuckDBService()
+            if not db.connect():
+                return jsonify({'error': 'Database connection failed'}), 500
+
+            # Hash the password
+            password_hash = generate_password_hash(password)
+
+            # Create the user
+            user_id = db.create_user(username, password_hash, employee_code, role)
+            db.disconnect()
+
+            if user_id:
+                return jsonify({
+                    'success': True, 
+                    'message': f'User {username} created successfully',
+                    'user_id': user_id,
+                    'employee_code': employee_code
+                })
+            else:
+                return jsonify({'error': 'Failed to create user. Username or Employee Code may already exist.'}), 409
+
+        except Exception as e:
+            logger.error(f"Create user error: {e}")
+            return jsonify({'error': str(e)}), 500          
     @app.route('/api/health')
     def health():
         return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
