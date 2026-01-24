@@ -61,7 +61,13 @@ class Config:
     
     # Excel Template Configuration
     EXCEL_TEMPLATE_PATH = os.environ.get('EXCEL_TEMPLATE_PATH') or 'templates/quotation_template.xlsx'
+    CLOUDINARY_CLOUD_NAME = os.getenv('CLOUDINARY_CLOUD_NAME')
+    CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY')
+    CLOUDINARY_API_SECRET = os.getenv('CLOUDINARY_API_SECRET')
+
     
+    # Allowed files
+    ALLOWED_EXTENSIONS = {'pdf', 'xlsx', 'xls', 'doc', 'docx', 'png', 'jpg', 'jpeg'}
     @staticmethod
     def validate_config():
         """

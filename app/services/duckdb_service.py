@@ -57,9 +57,11 @@ class DuckDBService:
                 CREATE TABLE IF NOT EXISTS email_extractions (
                     id INTEGER DEFAULT nextval('id_sequence'),
                     gmail_id VARCHAR PRIMARY KEY,
-                    ticket_number VARCHAR,            -- Format: DBQ-2025-01-001
+                    ticket_number VARCHAR,
                     ticket_status VARCHAR DEFAULT 'INBOX',
                     ticket_priority VARCHAR DEFAULT 'NORMAL',
+                    quotation_files JSON DEFAULT '[]',
+                    quotation_amount VARCHAR,
                     sender VARCHAR,
                     received_at TIMESTAMP,
                     subject VARCHAR,
@@ -72,46 +74,26 @@ class DuckDBService:
             """)
 
             # 2. Auto-repair: Add columns if they are missing (for existing DBs)
-            self._ensure_column_exists("email_extractions", "updated_at", "TIMESTAMP")
+            self._ensure_column_exists("email_extractions", "quotation_files", "JSON DEFAULT '[]'")
+            self._ensure_column_exists("email_extractions", "quotation_amount", "VARCHAR")
             self._ensure_column_exists("email_extractions", "ticket_number", "VARCHAR")
             self._ensure_column_exists("email_extractions", "ticket_status", "VARCHAR DEFAULT 'INBOX'")
             self._ensure_column_exists("email_extractions", "ticket_priority", "VARCHAR DEFAULT 'NORMAL'")
+            self._ensure_column_exists("email_extractions", "updated_at", "TIMESTAMP")
 
-            # 3. Create User Tokens Table (Google OAuth)
-            self.connection.execute("""
-                CREATE TABLE IF NOT EXISTS user_tokens (
-                    user_id VARCHAR PRIMARY KEY,
-                    token_json JSON,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
+            self.connection.execute("CREATE TABLE IF NOT EXISTS user_tokens (user_id VARCHAR PRIMARY KEY, token_json JSON, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+            self.connection.execute("CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), username VARCHAR UNIQUE, password_hash VARCHAR, role VARCHAR DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+            self.connection.execute("CREATE TABLE IF NOT EXISTS company_tokens (id INTEGER PRIMARY KEY, token_json TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+           
 
-            # 4. Create Users Table (App Authentication)
-            self.connection.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    username VARCHAR UNIQUE,
-                    password_hash VARCHAR,
-                    role VARCHAR DEFAULT 'user',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            
-            # 5. Company Gmail OAuth Token (SINGLE ROW)
-            self.connection.execute("""
-                CREATE TABLE IF NOT EXISTS company_tokens (
-                    id INTEGER PRIMARY KEY,
-                    token_json TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            
+           
+        
             logger.info("✅ Database tables initialized (Emails, Tokens, Users)")
             return True
         except Exception as e:
             logger.error(f"❌ Table creation error: {str(e)}")
             return False
-
+ 
     def _ensure_column_exists(self, table, column, data_type):
         """Helper to safely add columns to existing tables."""
         try:
@@ -168,51 +150,33 @@ class DuckDBService:
         try:
             extraction_result_json = json.dumps(extraction_result)
             status = extraction_result.get('status', 'VALID')
-            current_time = datetime.now()
             
-            # 1. Generate Ticket Number
             ticket_number = self._generate_next_ticket_number()
-            ticket_status = "INBOX"
-            
-            # 2. Determine Priority (Auto-detect)
-            subject_lower = email_data.get('subject', '').lower()
-            if any(x in subject_lower for x in ['urgent', 'asap', 'immediate', 'emergency']):
-                ticket_priority = 'URGENT'
-            else:
-                ticket_priority = 'NORMAL'
+            # Auto-detect urgency
+            priority = 'URGENT' if any(x in email_data.get('subject', '').lower() for x in ['urgent', 'asap']) else 'NORMAL'
 
             query = """
                 INSERT INTO email_extractions (
                     gmail_id, ticket_number, ticket_status, ticket_priority,
                     sender, received_at, subject, body_text, 
                     extraction_result, extraction_status, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, 'INBOX', ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (gmail_id) DO UPDATE SET
                     extraction_result = EXCLUDED.extraction_result,
                     extraction_status = EXCLUDED.extraction_status,
                     updated_at = EXCLUDED.updated_at
             """
-            
             self.connection.execute(query, [
-                email_data.get('gmail_id'),
-                ticket_number,
-                ticket_status,
-                ticket_priority,
-                email_data.get('sender', ''),
-                email_data.get('received_at'),
-                email_data.get('subject', ''),
-                email_data.get('body_text', ''),
-                extraction_result_json,
-                status,
-                current_time
+                email_data.get('gmail_id'), ticket_number, priority,
+                email_data.get('sender', ''), email_data.get('received_at'),
+                email_data.get('subject', ''), email_data.get('body_text', ''),
+                extraction_result_json, status, datetime.now()
             ])
             self.connection.commit()
-            logger.info(f"✅ Email saved: Ticket {ticket_number} [{ticket_priority}]")
             return True
         except Exception as e:
-            logger.error(f"Error inserting extraction: {str(e)}")
+            logger.error(f"Insert Error: {e}")
             return False
-
     def update_ticket_status(self, ticket_number, new_status):
         """Update workflow status (OPEN -> CLOSED)."""
         try:
@@ -229,36 +193,33 @@ class DuckDBService:
 
     def get_all_extractions(self, limit=100):
         try:
-            # ✅ FIX: Explicitly select columns in the EXACT order of the python list below
-            # DO NOT use SELECT *
-            query_columns = """
+            # ✅ FIX: Added quotation_files and quotation_amount to the list
+            cols = """
                 id, gmail_id, ticket_number, ticket_status, ticket_priority, 
+                quotation_files, quotation_amount,
                 sender, received_at, subject, body_text, 
                 extraction_result, extraction_status, updated_at, created_at
             """
             
             result = self.connection.execute(
-                f"SELECT {query_columns} FROM email_extractions ORDER BY received_at DESC LIMIT ?", 
+                f"SELECT {cols} FROM email_extractions ORDER BY received_at DESC LIMIT ?", 
                 [limit]
             ).fetchall()
             
-            columns = [
-                'id', 'gmail_id', 'ticket_number', 'ticket_status', 'ticket_priority', 
-                'sender', 'received_at', 'subject', 'body_text', 
-                'extraction_result', 'extraction_status', 'updated_at', 'created_at'
-            ]
-            
+            col_names = [c.strip() for c in cols.split(',')]
             extractions = []
+            
             for row in result:
-                # Create dict safely
-                item = dict(zip(columns, row))
+                item = dict(zip(col_names, row))
                 
-                # Parse JSON string if needed
-                if isinstance(item.get('extraction_result'), str):
-                    try:
-                        item['extraction_result'] = json.loads(item['extraction_result'])
-                    except:
-                        pass
+                # Parse JSON fields safely
+                for field in ['extraction_result', 'quotation_files']:
+                    if isinstance(item.get(field), str):
+                        try:
+                            item[field] = json.loads(item[field])
+                        except:
+                            item[field] = [] if field == 'quotation_files' else {}
+                            
                 extractions.append(item)
             return extractions
         except Exception as e:
@@ -267,34 +228,32 @@ class DuckDBService:
 
     def get_extraction(self, gmail_id):
         try:
-            # ✅ FIX: Explicitly select columns here too
-            query_columns = """
+            # ✅ FIX: Added quotation_files and quotation_amount here too
+            cols = """
                 id, gmail_id, ticket_number, ticket_status, ticket_priority, 
+                quotation_files, quotation_amount,
                 sender, received_at, subject, body_text, 
                 extraction_result, extraction_status, updated_at, created_at
             """
 
             result = self.connection.execute(
-                f"SELECT {query_columns} FROM email_extractions WHERE gmail_id = ?", 
+                f"SELECT {cols} FROM email_extractions WHERE gmail_id = ?", 
                 [gmail_id]
             ).fetchone()
             
-            if not result:
-                return None
+            if not result: return None
             
-            columns = [
-                'id', 'gmail_id', 'ticket_number', 'ticket_status', 'ticket_priority', 
-                'sender', 'received_at', 'subject', 'body_text', 
-                'extraction_result', 'extraction_status', 'updated_at', 'created_at'
-            ]
+            col_names = [c.strip() for c in cols.split(',')]
+            item = dict(zip(col_names, result))
             
-            item = dict(zip(columns, result))
-            
-            if isinstance(item.get('extraction_result'), str):
-                try:
-                    item['extraction_result'] = json.loads(item['extraction_result'])
-                except:
-                    pass
+            # Parse JSON fields safely
+            for field in ['extraction_result', 'quotation_files']:
+                if isinstance(item.get(field), str):
+                    try:
+                        item[field] = json.loads(item[field])
+                    except:
+                        item[field] = [] if field == 'quotation_files' else {}
+                        
             return item
         except Exception as e:
             logger.error(f"Error getting extraction: {str(e)}")
@@ -302,18 +261,11 @@ class DuckDBService:
 
     def update_extraction(self, gmail_id, extraction_result):
         try:
-            extraction_result_json = json.dumps(extraction_result)
-            current_time = datetime.now()
-            self.connection.execute("""
-                UPDATE email_extractions 
-                SET extraction_result = ?, extraction_status = 'VALID', updated_at = ?
-                WHERE gmail_id = ?
-            """, [extraction_result_json, current_time, gmail_id])
+            self.connection.execute("UPDATE email_extractions SET extraction_result = ?, updated_at = ? WHERE gmail_id = ?", 
+                                  [json.dumps(extraction_result), datetime.now(), gmail_id])
             self.connection.commit()
             return True
-        except Exception as e:
-            logger.error(f"Error updating extraction: {str(e)}")
-            return False
+        except: return False
 
     # --- Auth Token Methods ---
     
@@ -435,28 +387,57 @@ class DuckDBService:
             return True
         except Exception as e:
             logger.error(f"Error updating ticket priority: {e}")
-            return False    
-    def update_ticket_status(self, ticket_number, new_status):
-        """Update the workflow status of a ticket."""
+            return False   
+    def add_quotation_file(self, gmail_id, file_metadata):
+        """
+        Appends a file object to the quotation_files JSON list.
+        """
         try:
-            # 1. Define valid statuses
-            valid_statuses = [
-                'INBOX', 
-                'SENT', 'ORDER_CONFIRMED', 'ORDER_COMPLETED', 'CLOSED', 
-            ]
+            # 1. Fetch existing list
+            row = self.connection.execute("SELECT quotation_files FROM email_extractions WHERE gmail_id = ?", [gmail_id]).fetchone()
+            if not row: return False
             
-            if new_status not in valid_statuses:
-                logger.warning(f"Invalid status '{new_status}' provided.")
-                return False
+            # 2. Parse existing JSON
+            existing_files = []
+            if row[0]:
+                try:
+                    existing_files = json.loads(row[0])
+                    if not isinstance(existing_files, list): existing_files = []
+                except:
+                    existing_files = []
 
-            # 2. Update DB
-            self.connection.execute("""
-                UPDATE email_extractions 
-                SET ticket_status = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE ticket_number = ?
-            """, [new_status, ticket_number])
+            # 3. Append new file
+            existing_files.append(file_metadata)
+            
+            # 4. Save back to DB
+            self.connection.execute(
+                "UPDATE email_extractions SET quotation_files = ?, updated_at = CURRENT_TIMESTAMP WHERE gmail_id = ?", 
+                [json.dumps(existing_files), gmail_id]
+            )
             self.connection.commit()
             return True
         except Exception as e:
-            logger.error(f"Error updating ticket status: {e}")
-            return False   
+            logger.error(f"Error adding quotation file: {e}")
+            return False
+    def update_file_amount(self, gmail_id, file_id, amount):
+        try:
+            row = self.connection.execute("SELECT quotation_files FROM email_extractions WHERE gmail_id = ?", [gmail_id]).fetchone()
+            if not row: return False
+            
+            files = json.loads(row[0]) if row[0] else []
+            updated = False
+            for f in files:
+                if f.get('id') == file_id:
+                    f['amount'] = amount
+                    updated = True
+                    break
+            
+            if updated:
+                self.connection.execute("UPDATE email_extractions SET quotation_files = ? WHERE gmail_id = ?", [json.dumps(files), gmail_id])
+                self.connection.commit()
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error updating file amount: {e}")
+            return False    
+    

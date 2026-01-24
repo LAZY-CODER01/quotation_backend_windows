@@ -22,6 +22,11 @@ from app.services.new_excel_generation import ExcelGenerationService
 from config.settings import Config
 from app.auth.jwt_utils import create_jwt
 from app.auth.jwt_required import jwt_required
+from app.services.storage_service import StorageService
+
+from werkzeug.utils import secure_filename
+
+
 
 # Load environment variables
 load_dotenv()
@@ -103,7 +108,7 @@ def create_flask_app():
                 return jsonify({"error": "Username and password required"}), 400
 
             db = DuckDBService()
-            if not db.connect():
+            if not db.connect(): 
                 return jsonify({"error": "Database connection failed"}), 500
 
             user = db.get_user_by_username(username)
@@ -476,6 +481,19 @@ def create_flask_app():
             return jsonify({'error': 'Database connection failed'}), 500
         except Exception as e:
             return jsonify({'error': str(e)}), 500 
+   
+
+    @app.route('/api/ticket/update-file-amount', methods=['POST'])
+    @jwt_required()
+    def update_file_amount():
+        try:
+            data = request.get_json()
+            db = DuckDBService()
+            if db.connect() and db.update_file_amount(data.get('gmail_id'), data.get('file_id'), data.get('amount')):
+                db.disconnect()
+                return jsonify({'success': True})
+            return jsonify({'error': 'Failed'}), 500
+        except Exception as e: return jsonify({'error': str(e)}), 500    
     @app.route('/api/ticket/update-requirements', methods=['POST'])
     @jwt_required()
     def update_requirements():
@@ -510,7 +528,63 @@ def create_flask_app():
             
             return jsonify({'error': 'DB connection failed'}), 500
         except Exception as e:
-            return jsonify({'error': str(e)}), 500       
+            return jsonify({'error': str(e)}), 500   
+    @app.route('/api/ticket/upload-quotation', methods=['POST'])
+    @jwt_required()
+    def upload_quotation_file():
+        try:
+            if 'file' not in request.files:
+                return jsonify({'error': 'No file part'}), 400
+            
+            file = request.files['file']
+            gmail_id = request.form.get('gmail_id')
+            
+            if file.filename == '' or not gmail_id:
+                return jsonify({'error': 'No selected file or Ticket ID'}), 400
+
+            # Optional: Check extensions
+            # if not allowed_file(file.filename): ...
+
+            filename = secure_filename(file.filename)
+            
+            # Use UUID for unique filename in Cloudinary
+            unique_id = uuid.uuid4().hex
+            folder_path = f"snapquote/tickets/{gmail_id}"
+            
+            # ✅ Upload to Cloudinary
+            storage = StorageService()
+            file_url = storage.upload_file(
+                file, 
+                folder=folder_path,
+                public_id=unique_id
+            )
+
+            if not file_url:
+                return jsonify({'error': 'Cloud upload failed'}), 500
+
+            # Prepare Metadata for DB
+            file_id = str(uuid.uuid4())
+            file_data = {
+                "id": file_id,
+                "name": filename,
+                "url": file_url,      # Cloudinary URL
+                "amount": "", 
+                "uploaded_at": datetime.now().isoformat()
+            }
+
+            # Save Metadata to DuckDB
+            db = DuckDBService()
+            if db.connect():
+                success = db.add_quotation_file(gmail_id, file_data)
+                db.disconnect()
+                if success:
+                    return jsonify({'success': True, 'file': file_data})
+            
+            return jsonify({'error': 'Database save failed'}), 500
+            
+        except Exception as e:
+            # logger.error(f"Upload error: {e}")
+            return jsonify({'error': str(e)}), 500        
     @app.route('/api/health')
     def health():
         return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
@@ -521,6 +595,7 @@ def create_flask_app():
     # Start Monitoring on App Startup
     # Start Monitoring on App Startup
     start_company_gmail_monitoring()
+
     
     return app
 

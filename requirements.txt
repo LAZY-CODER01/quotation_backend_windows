@@ -16,3 +16,4 @@ werkzeug
 tabulate
 pyjwt
 bcrypt
+cloudinary
