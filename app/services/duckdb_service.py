@@ -72,6 +72,7 @@ class DuckDBService:
                     extraction_result JSON,
                     extraction_status VARCHAR,
                     updated_at TIMESTAMP,
+                    assigned_to VARCHAR,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
@@ -86,6 +87,7 @@ class DuckDBService:
             self._ensure_column_exists("email_extractions", "cpo_files", "JSON DEFAULT '[]'")
             self._ensure_column_exists("email_extractions", "internal_notes", "JSON DEFAULT '[]'")
             self._ensure_column_exists("email_extractions", "activity_logs", "JSON DEFAULT '[]'")
+            self._ensure_column_exists("email_extractions", "assigned_to", "VARCHAR")
             self.connection.execute("CREATE TABLE IF NOT EXISTS user_tokens (user_id VARCHAR PRIMARY KEY, token_json JSON, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
             self.connection.execute("CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), username VARCHAR UNIQUE, password_hash VARCHAR,employee_code VARCHAR UNIQUE, role VARCHAR DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
             self.connection.execute("CREATE TABLE IF NOT EXISTS company_tokens (id INTEGER PRIMARY KEY, token_json TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
@@ -204,7 +206,7 @@ class DuckDBService:
                 id, gmail_id, ticket_number, ticket_status, ticket_priority, 
                 quotation_files,cpo_files, quotation_amount,
                 sender, received_at, subject, body_text, internal_notes, activity_logs,
-                extraction_result, extraction_status, updated_at, created_at
+                extraction_result, extraction_status, updated_at, created_at,assigned_to
             """
             
             result = self.connection.execute(
@@ -239,7 +241,7 @@ class DuckDBService:
                 id, gmail_id, ticket_number, ticket_status, ticket_priority, 
                 quotation_files, quotation_amount,
                 sender, received_at, subject, body_text, internal_notes, activity_logs,
-                extraction_result, extraction_status, updated_at, created_at
+                extraction_result, extraction_status, updated_at, created_at,assigned_to
             """
 
             result = self.connection.execute(
@@ -515,7 +517,7 @@ class DuckDBService:
         try:
             # 1. Fetch existing logs
             row = self.connection.execute("SELECT activity_logs FROM email_extractions WHERE gmail_id = ?", [gmail_id]).fetchone()
-            if not row: return False
+            if not row: return None # 👈 Changed from False to None
             
             existing_logs = []
             if row[0]:
@@ -543,7 +545,28 @@ class DuckDBService:
                 [json.dumps(existing_logs), gmail_id]
             )
             self.connection.commit()
-            return True
+            return log_entry # 👈 ✅ RETURN THE OBJECT SO APP.PY CAN USE IT
         except Exception as e:
             logger.error(f"Error adding activity log: {e}")
-            return False  
+            return None 
+    def get_all_users_list(self):
+        """Fetch a list of all usernames for the dropdown."""
+        try:
+            result = self.connection.execute("SELECT username FROM users ORDER BY username ASC").fetchall()
+            # Return a simple list of strings: ['admin', 'john_doe', etc.]
+            return [row[0] for row in result]
+        except Exception as e:
+            logger.error(f"Error getting user list: {e}")
+            return []    
+    def assign_ticket(self, gmail_id, username):
+        try:
+            self.connection.execute("""
+                UPDATE email_extractions 
+                SET assigned_to = ?, updated_at = CURRENT_TIMESTAMP 
+                WHERE gmail_id = ?
+            """, [username, gmail_id])
+            self.connection.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error assigning ticket: {e}")
+            return False      

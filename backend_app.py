@@ -766,7 +766,60 @@ def create_flask_app():
 
         except Exception as e:
             logger.error(f"Create user error: {e}")
-            return jsonify({'error': str(e)}), 500          
+            return jsonify({'error': str(e)}), 500      
+    @app.route('/api/users/list', methods=['GET'])
+    @jwt_required()
+    def get_users_list():
+        try:
+            db = DuckDBService()
+            if db.connect():
+                users = db.get_all_users_list()
+                db.disconnect()
+                return jsonify({'success': True, 'users': users})
+            return jsonify({'error': 'DB connection failed'}), 500
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    # 2. Endpoint to Assign Ticket
+    @app.route('/api/ticket/assign', methods=['POST'])
+    @jwt_required(roles=['ADMIN'])
+    def assign_ticket():
+        try:
+            data = request.get_json()
+            gmail_id = data.get('gmail_id')
+            assigned_to = data.get('assigned_to') # Username
+
+            if not gmail_id:
+                return jsonify({'error': 'Missing Ticket ID'}), 400
+
+            db = DuckDBService()
+            if db.connect():
+                # 1. Perform Assignment
+                success = db.assign_ticket(gmail_id, assigned_to)
+                
+                log_entry = None
+                if success:
+                    # ✅ FIX: Pass arguments individually, NOT as a dictionary
+                    description = f"Assigned ticket to {assigned_to}" if assigned_to else "Unassigned ticket"
+                    
+                    log_entry = db.add_activity_log(
+                        gmail_id=gmail_id,
+                        action="ASSIGNMENT_CHANGE",
+                        description=description,
+                        user=request.user.get('username')
+                    )
+
+                db.disconnect()
+                
+                if success:
+                    # Return the log_entry so frontend updates instantly
+                    return jsonify({'success': True, 'log': log_entry})
+                else:
+                    return jsonify({'error': 'Failed to assign'}), 500
+            
+            return jsonify({'error': 'DB Connection failed'}), 500
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500 
     @app.route('/api/health')
     def health():
         return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
