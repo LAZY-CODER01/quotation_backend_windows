@@ -26,11 +26,11 @@ class Config:
     COMPANY_GMAIL_ID = 'demo.snapquote@gmail.com'
     
     # CORS Configuration
-    CORS_ORIGINS = os.environ.get('CORS_ORIGINS', 'http://localhost:5173,http://localhost:3000').split(',')
-    FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
+    CORS_ORIGINS = os.environ.get('CORS_ORIGINS', 'http://localhost:3000,http://localhost:5173').split(',')
+    FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
     
     # OAuth Redirect Configuration
-    OAUTH_REDIRECT_URI = os.environ.get('OAUTH_REDIRECT_URI', 'http://localhost:5000/api/admin/gmail/callback')
+    OAUTH_REDIRECT_URI = os.environ.get('OAUTH_REDIRECT_URI', 'http://localhost:3000/admin/gmail/callback')
     
     # Database Configuration
     DATABASE_URL = os.environ.get('DATABASE_URL') or 'sqlite:///database/quotesnap.db'

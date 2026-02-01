@@ -50,15 +50,37 @@ class DuckDBService:
                 self.connection = None
 
     def create_table(self):
-        """Create necessary tables (Emails + Auth Tokens + Users)."""
+        """Create necessary tables (Emails + Auth Tokens + Users + Files)."""
         try:
-            # 1. Create Email Extractions Table with Ticket & Priority Fields
+            # -----------------------------------------------------------
+            # 🚨 HARD RESET FOR SCHEMA MIGRATION
+            # This drops the old tables to ensure they are recreated with the correct UNIQUE constraints.
+            # Since you deleted your data, this is safe and necessary.
+            # -----------------------------------------------------------
+            # try:
+            #     # 1. Drop Child Tables (to remove FK dependencies)
+            #     self.connection.execute("DROP TABLE IF EXISTS quotations")
+            #     self.connection.execute("DROP TABLE IF EXISTS cpo_orders")
+                
+            #     # 2. Check if email_extractions exists and verify constraint
+            #     # If we are in a broken state, we drop the main table to rebuild it fresh.
+            #     self.connection.execute("DROP TABLE IF EXISTS email_extractions")
+            #     logger.info("♻️  Dropped old tables to force schema update.")
+            # except Exception as e:
+            #     logger.warning(f"⚠️ Reset warning: {e}")
+            # # -----------------------------------------------------------
+
+
+            # 1. Base Sequences
+            self.connection.execute("CREATE SEQUENCE IF NOT EXISTS id_sequence START 1;")
+
+            # 2. Main Emails Table 
+            # (Now this will definitely run because we dropped the old one above)
             self.connection.execute("""
-                CREATE SEQUENCE IF NOT EXISTS id_sequence START 1;
                 CREATE TABLE IF NOT EXISTS email_extractions (
                     id INTEGER DEFAULT nextval('id_sequence'),
                     gmail_id VARCHAR PRIMARY KEY,
-                    ticket_number VARCHAR,
+                    ticket_number VARCHAR UNIQUE, -- 👈 This is the critical fix
                     ticket_status VARCHAR DEFAULT 'INBOX',
                     ticket_priority VARCHAR DEFAULT 'NORMAL',
                     quotation_files JSON DEFAULT '[]',
@@ -73,35 +95,53 @@ class DuckDBService:
                     extraction_status VARCHAR,
                     updated_at TIMESTAMP,
                     assigned_to VARCHAR,
+                    internal_notes JSON DEFAULT '[]',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
 
-            # 2. Auto-repair: Add columns if they are missing (for existing DBs)
-            self._ensure_column_exists("email_extractions", "quotation_files", "JSON DEFAULT '[]'")
-            self._ensure_column_exists("email_extractions", "quotation_amount", "VARCHAR")
-            self._ensure_column_exists("email_extractions", "ticket_number", "VARCHAR")
-            self._ensure_column_exists("email_extractions", "ticket_status", "VARCHAR DEFAULT 'INBOX'")
-            self._ensure_column_exists("email_extractions", "ticket_priority", "VARCHAR DEFAULT 'NORMAL'")
-            self._ensure_column_exists("email_extractions", "updated_at", "TIMESTAMP")
-            self._ensure_column_exists("email_extractions", "cpo_files", "JSON DEFAULT '[]'")
-            self._ensure_column_exists("email_extractions", "internal_notes", "JSON DEFAULT '[]'")
-            self._ensure_column_exists("email_extractions", "activity_logs", "JSON DEFAULT '[]'")
-            self._ensure_column_exists("email_extractions", "assigned_to", "VARCHAR")
-            self.connection.execute("CREATE TABLE IF NOT EXISTS user_tokens (user_id VARCHAR PRIMARY KEY, token_json JSON, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
-            self.connection.execute("CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), username VARCHAR UNIQUE, password_hash VARCHAR,employee_code VARCHAR UNIQUE, role VARCHAR DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
-            self.connection.execute("CREATE TABLE IF NOT EXISTS company_tokens (id INTEGER PRIMARY KEY, token_json TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
-            self._ensure_column_exists("users", "employee_code", "VARCHAR")
-           
+            # 3. Create Normalized Tables for Files
+            # These will now succeed because ticket_number is guaranteed to be UNIQUE
+            self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS quotations (
+                    id INTEGER PRIMARY KEY DEFAULT nextval('id_sequence'),
+                    ticket_number VARCHAR,
+                    reference_id VARCHAR,
+                    file_name VARCHAR,
+                    file_url VARCHAR,
+                    amount VARCHAR,
+                    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (ticket_number) REFERENCES email_extractions(ticket_number)
+                );
+            """)
 
-           
-        
-            logger.info("✅ Database tables initialized (Emails, Tokens, Users)")
+            self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS cpo_orders (
+                    id INTEGER PRIMARY KEY DEFAULT nextval('id_sequence'),
+                    ticket_number VARCHAR,
+                    reference_id VARCHAR,
+                    file_name VARCHAR,
+                    file_url VARCHAR,
+                    amount VARCHAR,
+                    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (ticket_number) REFERENCES email_extractions(ticket_number)
+                );
+            """)
+
+            # 4. Auth Tables (Users, Tokens)
+            self.connection.execute("CREATE TABLE IF NOT EXISTS user_tokens (user_id VARCHAR PRIMARY KEY, token_json JSON, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+            self.connection.execute("CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), username VARCHAR UNIQUE, password_hash VARCHAR, employee_code VARCHAR UNIQUE, role VARCHAR DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+            self.connection.execute("CREATE TABLE IF NOT EXISTS company_tokens (id INTEGER PRIMARY KEY, token_json TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+            
+            # Helper to ensure columns exist (in case we didn't drop tables above)
+            self._ensure_column_exists("users", "employee_code", "VARCHAR")
+
+            logger.info("✅ Database tables initialized (Emails, Tokens, Users, Quotations, CPO)")
             return True
         except Exception as e:
             logger.error(f"❌ Table creation error: {str(e)}")
             return False
- 
+        
     def _ensure_column_exists(self, table, column, data_type):
         """Helper to safely add columns to existing tables."""
         try:
@@ -123,7 +163,7 @@ class DuckDBService:
         now = datetime.now()
         year = now.year
         month = f"{now.month:02d}"
-        prefix = f"DBQ-{year}-{month}-"
+        prefix = f"TKT-{year}-{month}-"
 
         try:
             # Find the highest ticket number for the CURRENT month
@@ -221,13 +261,46 @@ class DuckDBService:
                 item = dict(zip(col_names, row))
                 
                 # Parse JSON fields safely
-                for field in ['extraction_result', 'quotation_files','cpo_files','internal_notes', 'activity_logs']:
+                for field in ['extraction_result', 'internal_notes', 'activity_logs']:
                     if isinstance(item.get(field), str):
                         try:
                             item[field] = json.loads(item[field])
                         except:
-                            item[field] = [] if field in ['quotation_files', 'cpo_files','internal_notes', 'activity_logs'] else {}
-                            
+                            item[field] = [] if field in ['internal_notes', 'activity_logs'] else {}
+                
+                # --- Fetch Normalized Files ---
+                try:
+                    ticket_number = item.get('ticket_number')
+                    if ticket_number:
+                        # Fetch Quotations
+                        # ✅ FIX: Fetch file_name/file_url and alias to name/url for frontend compatibility
+                        q_files = self.connection.execute("""
+                            SELECT id, file_name, file_url, amount, uploaded_at, reference_id 
+                            FROM quotations WHERE ticket_number = ?
+                        """, [ticket_number]).fetchall()
+                        item['quotation_files'] = [
+                            {'id': q[0], 'name': q[1], 'url': q[2], 'amount': q[3], 'uploaded_at': q[4].isoformat() if q[4] else None, 'reference_id': q[5]}
+                            for q in q_files
+                        ]
+
+                        # Fetch CPO Files
+                        c_files = self.connection.execute("""
+                            SELECT id, file_name, file_url, amount, uploaded_at, reference_id 
+                            FROM cpo_orders WHERE ticket_number = ?
+                        """, [ticket_number]).fetchall()
+                        item['cpo_files'] = [
+                            {'id': c[0], 'name': c[1], 'url': c[2], 'amount': c[3], 'uploaded_at': c[4].isoformat() if c[4] else None, 'reference_id': c[5]}
+                            for c in c_files
+                        ]
+                    else:
+                        item['quotation_files'] = []
+                        item['cpo_files'] = []
+                except Exception as e:
+                     # ✅ FIX: Log specific error but don't crash
+                     logger.warning(f"Failed to fetch linked files for {ticket_number}: {e}")
+                     item['quotation_files'] = []
+                     item['cpo_files'] = []
+
                 extractions.append(item)
             return extractions
         except Exception as e:
@@ -255,13 +328,44 @@ class DuckDBService:
             item = dict(zip(col_names, result))
             
             # Parse JSON fields safely
-            for field in ['extraction_result', 'quotation_files','cpo_files','internal_notes', 'activity_logs']:
+            for field in ['extraction_result', 'internal_notes', 'activity_logs']:
                 if isinstance(item.get(field), str):
                     try:
                         item[field] = json.loads(item[field])
                     except:
-                        item[field] = [] if field in ['quotation_files', 'cpo_files','internal_notes', 'activity_logs'] else {}
-                        
+                        item[field] = [] if field in ['internal_notes', 'activity_logs'] else {}
+            
+            # --- Fetch Normalized Files ---
+            try:
+                ticket_number = item.get('ticket_number')
+                if ticket_number:
+                    # Fetch Quotations
+                    q_files = self.connection.execute("""
+                        SELECT id, file_name, file_url, amount, uploaded_at, reference_id 
+                        FROM quotations WHERE ticket_number = ?
+                    """, [ticket_number]).fetchall()
+                    item['quotation_files'] = [
+                        {'id': q[0], 'name': q[1], 'url': q[2], 'amount': q[3], 'uploaded_at': q[4].isoformat() if q[4] else None, 'reference_id': q[5]}
+                        for q in q_files
+                    ]
+
+                    # Fetch CPO Files
+                    c_files = self.connection.execute("""
+                        SELECT id, file_name, file_url, amount, uploaded_at, reference_id 
+                        FROM cpo_orders WHERE ticket_number = ?
+                    """, [ticket_number]).fetchall()
+                    item['cpo_files'] = [
+                        {'id': c[0], 'name': c[1], 'url': c[2], 'amount': c[3], 'uploaded_at': c[4].isoformat() if c[4] else None, 'reference_id': c[5]}
+                        for c in c_files
+                    ]
+                else:
+                    item['quotation_files'] = []
+                    item['cpo_files'] = []
+            except Exception as e:
+                    logger.warning(f"Failed to fetch linked files for {ticket_number}: {e}")
+                    item['quotation_files'] = []
+                    item['cpo_files'] = []
+
             return item
         except Exception as e:
             logger.error(f"Error getting extraction: {str(e)}")
@@ -410,29 +514,39 @@ class DuckDBService:
             return False   
     def add_quotation_file(self, gmail_id, file_metadata):
         """
-        Appends a file object to the quotation_files JSON list.
+        Inserts a file record into the quotations table.
         """
         try:
-            # 1. Fetch existing list
-            row = self.connection.execute("SELECT quotation_files FROM email_extractions WHERE gmail_id = ?", [gmail_id]).fetchone()
-            if not row: return False
+            # 1. Fetch ticket_number
+            row = self.connection.execute("SELECT ticket_number FROM email_extractions WHERE gmail_id = ?", [gmail_id]).fetchone()
             
-            # 2. Parse existing JSON
-            existing_files = []
-            if row[0]:
-                try:
-                    existing_files = json.loads(row[0])
-                    if not isinstance(existing_files, list): existing_files = []
-                except:
-                    existing_files = []
+            # ✅ FIX: Handle missing ticket number by generating one
+            if not row or not row[0]:
+                logger.info(f"Ticket number missing for {gmail_id}. Generating new one...")
+                ticket_number = self._generate_next_ticket_number()
+                self.connection.execute("UPDATE email_extractions SET ticket_number = ? WHERE gmail_id = ?", [ticket_number, gmail_id])
+                self.connection.commit()
+            else:
+                ticket_number = row[0]
 
-            # 3. Append new file
-            existing_files.append(file_metadata)
+            # 2. Generate DBQ Reference ID
+            try:
+                reference_id = ticket_number.replace("TKT", "DBQ")
+            except Exception as e:
+                logger.warning(f"Failed to generate DBQ ID: {e}")
+                reference_id = f"DBQ-{uuid.uuid4().hex[:8]}"
+
+            # 3. Insert into quotations table
+            # ✅ FIX: Use file_name, file_url
+            self.connection.execute("""
+                INSERT INTO quotations (ticket_number, reference_id, file_name, file_url, amount, uploaded_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, [ticket_number, reference_id, file_metadata.get('name'), file_metadata.get('url'), file_metadata.get('amount')])
             
-            # 4. Save back to DB
+            # 4. Update Status and Timestamp on Main Ticket
             self.connection.execute(
-                "UPDATE email_extractions SET quotation_files = ?, updated_at = CURRENT_TIMESTAMP WHERE gmail_id = ?", 
-                [json.dumps(existing_files), gmail_id]
+                "UPDATE email_extractions SET ticket_status = 'SENT', updated_at = CURRENT_TIMESTAMP WHERE gmail_id = ?", 
+                [gmail_id]
             )
             self.connection.commit()
             return True
@@ -441,43 +555,48 @@ class DuckDBService:
             return False
     def update_file_amount(self, gmail_id, file_id, amount):
         try:
-            row = self.connection.execute("SELECT quotation_files FROM email_extractions WHERE gmail_id = ?", [gmail_id]).fetchone()
-            if not row: return False
-            
-            files = json.loads(row[0]) if row[0] else []
-            updated = False
-            for f in files:
-                if f.get('id') == file_id:
-                    f['amount'] = amount
-                    updated = True
-                    break
-            
-            if updated:
-                self.connection.execute("UPDATE email_extractions SET quotation_files = ? WHERE gmail_id = ?", [json.dumps(files), gmail_id])
-                self.connection.commit()
-                return True
-            return False
+            # Update amount in quotations table directly using the ID
+            # We ignore gmail_id since ID is unique, but we could verify if needed.
+            # Assuming file_id is the integer ID from the database
+            self.connection.execute("UPDATE quotations SET amount = ? WHERE id = ?", [amount, file_id])
+            self.connection.commit()
+            return True
         except Exception as e:
             logger.error(f"Error updating file amount: {e}")
             return False    
     def add_cpo_file(self, gmail_id, file_metadata):
       try:
-        row = self.connection.execute("SELECT cpo_files FROM email_extractions WHERE gmail_id = ?", [gmail_id]).fetchone()
-        if not row: return False
+        # 1. Fetch ticket_number
+        row = self.connection.execute("SELECT ticket_number FROM email_extractions WHERE gmail_id = ?", [gmail_id]).fetchone()
         
-        existing_files = []
-        if row[0]:
-            try:
-                existing_files = json.loads(row[0])
-                if not isinstance(existing_files, list): existing_files = []
-            except:
-                existing_files = []
+        # ✅ FIX: Handle missing ticket number by generating one
+        if not row or not row[0]:
+            logger.info(f"Ticket number missing for {gmail_id}. Generating new one...")
+            ticket_number = self._generate_next_ticket_number()
+            self.connection.execute("UPDATE email_extractions SET ticket_number = ? WHERE gmail_id = ?", [ticket_number, gmail_id])
+            self.connection.commit()
+        else:
+            ticket_number = row[0]
 
-        existing_files.append(file_metadata)
+        # 2. Generate PO Reference ID
+        # Logic: Replace TKT with PO
+        try:
+             reference_id = ticket_number.replace("TKT", "PO")
+        except Exception as e:
+            logger.warning(f"Failed to generate PO ID: {e}")
+            reference_id = f"PO-{uuid.uuid4().hex[:8]}"
+
+        # 3. Insert into cpo_orders table
+        # ✅ FIX: Use file_name, file_url
+        self.connection.execute("""
+            INSERT INTO cpo_orders (ticket_number, reference_id, file_name, file_url, amount, uploaded_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, [ticket_number, reference_id, file_metadata.get('name'), file_metadata.get('url'), file_metadata.get('amount')])
         
+        # 4. Update Status and Timestamp on Main Ticket
         self.connection.execute(
-            "UPDATE email_extractions SET cpo_files = ?, updated_at = CURRENT_TIMESTAMP WHERE gmail_id = ?", 
-            [json.dumps(existing_files), gmail_id]
+            "UPDATE email_extractions SET ticket_status = 'ORDER_CONFIRMED', updated_at = CURRENT_TIMESTAMP WHERE gmail_id = ?", 
+            [gmail_id]
         )
         self.connection.commit()
         return True

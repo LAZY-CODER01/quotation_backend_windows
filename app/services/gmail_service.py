@@ -355,8 +355,8 @@ class GmailService:
 
     def _check_for_new_emails(self):
         try:
-            # Removed 'newer_than:1d' to ensure older unprocessed emails are fetched
-            query = "in:inbox -label:SnapQuote-Fetched -label:SnapQuote-Irrelevant"
+            # Query: Inbox + Not Processed + Newer than 1 Day
+            query = "in:inbox -label:SnapQuote-Fetched -label:SnapQuote-Irrelevant newer_than:1d"
             results = self.service.users().messages().list(userId='me', q=query, maxResults=10).execute()
             messages = results.get('messages', [])
             
