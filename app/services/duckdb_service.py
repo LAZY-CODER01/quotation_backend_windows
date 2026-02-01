@@ -287,9 +287,9 @@ class DuckDBService:
             logger.error(f"Error getting gmail_id from ticket: {e}")
             return None
 
-    def get_all_extractions(self, limit=100, status_filter=None):
+    def get_all_extractions(self, limit=100, status_filter=None, user_role='user', username=None):
         try:
-            # ✅ FIX: Added quotation_files and quotation_amount to the list
+            # ✅ Added quotation_files and quotation_amount to the list
             cols = """
                 id, gmail_id, ticket_number, ticket_status, ticket_priority, 
                 quotation_files,cpo_files, quotation_amount,
@@ -297,13 +297,18 @@ class DuckDBService:
                 extraction_result, extraction_status, updated_at, created_at,assigned_to
             """
             
-            query = f"SELECT {cols} FROM email_extractions"
+            query = f"SELECT {cols} FROM email_extractions WHERE 1=1"
             params = []
 
             if status_filter:
-                query += " WHERE ticket_status = ?"
+                query += " AND ticket_status = ?"
                 params.append(status_filter)
             
+            # ✅ RBAC: Users only see assigned or filtered tickets
+            if user_role != 'ADMIN':
+                query += " AND (assigned_to = ? OR assigned_to IS NULL OR assigned_to = '')"
+                params.append(username) # Current User
+
             query += " ORDER BY received_at DESC LIMIT ?"
             params.append(limit)
 

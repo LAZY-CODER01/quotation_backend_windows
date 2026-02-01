@@ -258,7 +258,17 @@ def create_flask_app():
             # Extract query params
             status_filter = request.args.get('status')
             
-            extractions = db_service.get_all_extractions(limit=1000, status_filter=status_filter)
+            # Extract User Context
+            current_user = request.user
+            user_role = current_user.get('role', 'user')
+            username = current_user.get('username')
+
+            extractions = db_service.get_all_extractions(
+                limit=1000, 
+                status_filter=status_filter,
+                user_role=user_role, 
+                username=username
+            )
             count = len(extractions)
             db_service.disconnect()
             
