@@ -1,3 +1,4 @@
+import re
 import duckdb
 import os
 import logging
@@ -203,12 +204,47 @@ class DuckDBService:
             # Auto-detect urgency
             priority = 'URGENT' if any(x in email_data.get('subject', '').lower() for x in ['urgent', 'asap']) else 'NORMAL'
 
+            # -----------------------------------------------------------
+            # 🤖 AUTO-ASSIGNMENT LOGIC
+            # -----------------------------------------------------------
+            assigned_to_user = None
+            body_text = email_data.get('body_text', '')
+            if body_text:
+                # Regex to find EMP code safely
+                # \bEMP : Word boundary
+                # (?: ... | ... ) : Alternatives
+                # 1. [\s-]+([a-zA-Z0-9]+) : Separator + Alphanumeric ID (e.g. EMP-001, EMP 123)
+                # 2. (\d[a-zA-Z0-9]*)    : Digit + Alphanumeric ID (e.g. EMP001). Enforces attached IDs start with digit to avoid 'EMPloyee'
+                emp_pattern = r'(?i)\bEMP(?:[\s-]+([a-zA-Z0-9]+)|(\d[a-zA-Z0-9]*))' 
+                match = re.search(emp_pattern, body_text)
+                
+                if match:
+                    # ID is in group 1 (if separated) or group 2 (if attached)
+                    emp_id_part = match.group(1) or match.group(2)
+                    full_emp_code = match.group(0)
+                    
+                    # Search for the user using variations of the ID
+                    candidates = [
+                        full_emp_code,          # Literal match found
+                        f"EMP-{emp_id_part}",   # Standard hyphenated
+                        f"EMP{emp_id_part}",    # Compressed
+                        emp_id_part             # Just the ID
+                    ]
+                    
+                    placeholders = ','.join(['?'] * len(candidates))
+                    user_query = f"SELECT username FROM users WHERE employee_code IN ({placeholders})"
+                    user_res = self.connection.execute(user_query, candidates).fetchone()
+                    
+                    if user_res:
+                        assigned_to_user = user_res[0]
+                        logger.info(f"🤖 Auto-assigned ticket {ticket_number} to {assigned_to_user} (Found EMP code: {full_emp_code})")
+
             query = """
                 INSERT INTO email_extractions (
                     gmail_id, ticket_number, ticket_status, ticket_priority,
                     sender, received_at, subject, body_text, 
-                    extraction_result, extraction_status, updated_at
-                ) VALUES (?, ?, 'INBOX', ?, ?, ?, ?, ?, ?, ?, ?)
+                    extraction_result, extraction_status, updated_at, assigned_to
+                ) VALUES (?, ?, 'INBOX', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (gmail_id) DO UPDATE SET
                     extraction_result = EXCLUDED.extraction_result,
                     extraction_status = EXCLUDED.extraction_status,
@@ -217,8 +253,8 @@ class DuckDBService:
             self.connection.execute(query, [
                 email_data.get('gmail_id'), ticket_number, priority,
                 email_data.get('sender', ''), email_data.get('received_at'),
-                email_data.get('subject', ''), email_data.get('body_text', ''),
-                extraction_result_json, status, datetime.now()
+                email_data.get('subject', ''), body_text,
+                extraction_result_json, status, datetime.now(), assigned_to_user
             ])
             self.connection.commit()
             return True

@@ -25,15 +25,17 @@ def extract_json_from_response(response_text: str) -> dict:
     except json.JSONDecodeError:
         pass
     
-    # Remove markdown code blocks with language specifier
-    # Pattern: `````` or ``````
-    markdown_pattern = r'``````'
+    # Remove markdown code blocks with language specifier using robust regex
+    # Pattern looks for ``` optionally followed by json, then captures content until checks
+    # regex matches: ```json { ... } ``` or ``` { ... } ```
+    markdown_pattern = r'```(?:json)?\s*(.*?)\s*```'
     matches = re.findall(markdown_pattern, response_text, re.DOTALL)
     
     if matches:
         # Try parsing the content inside code blocks
         for match in matches:
             try:
+                # If there are multiple blocks, return the first valid JSON
                 return json.loads(match.strip())
             except json.JSONDecodeError:
                 continue
