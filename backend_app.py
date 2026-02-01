@@ -87,7 +87,7 @@ def create_flask_app():
     CORS(app,
          origins=app.config.get('CORS_ORIGINS'),
          allow_headers=["Content-Type", "Authorization"],
-         methods=["GET", "POST", "OPTIONS", "DELETE"])
+         methods=["GET", "POST", "OPTIONS", "DELETE", "PUT"])
 
     # -------------------------------------------------------------------------
     # AUTHENTICATION ROUTES
@@ -255,7 +255,10 @@ def create_flask_app():
             if not db_service.connect():
                 return jsonify({'error': 'Failed to connect to database'}), 500
             
-            extractions = db_service.get_all_extractions(limit=1000)
+            # Extract query params
+            status_filter = request.args.get('status')
+            
+            extractions = db_service.get_all_extractions(limit=1000, status_filter=status_filter)
             count = len(extractions)
             db_service.disconnect()
             
@@ -507,6 +510,64 @@ def create_flask_app():
                 return jsonify({'success': True, 'status': status})
             
             return jsonify({'error': 'Database connection failed'}), 500
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500 
+   
+    @app.route('/api/ticket/<ticket_number>/status', methods=['PUT'])
+    @jwt_required()
+    def update_ticket_status_rbac(ticket_number):
+        """
+        Update ticket workflow status with RBAC.
+        - Admin: Can set any status (OPEN, CLOSED, ORDER_COMPLETED, etc.)
+        - User: Can ONLY set status to COMPLETION_REQUESTED
+        """
+        try:
+            data = request.get_json()
+            new_status = data.get('status')
+            
+            if not new_status:
+                return jsonify({'error': 'Status is required'}), 400
+
+            db = DuckDBService()
+            if not db.connect():
+                return jsonify({'error': 'Database connection failed'}), 500
+
+            # 1. Resolve ticket_number to gmail_id for logging
+            gmail_id = db.get_gmail_id_from_ticket(ticket_number)
+            if not gmail_id:
+                db.disconnect()
+                return jsonify({'error': 'Ticket not found'}), 404
+
+            # 2. RBAC Logic
+            user_role = request.user.get('role', 'user')
+            
+            if user_role != 'ADMIN':
+                # Standard User Restrictions
+                if new_status not in ['COMPLETION_REQUESTED']:
+                    db.disconnect()
+                    return jsonify({'error': 'Unauthorized: Only Admins can close/complete tickets.'}), 403
+            
+            # 3. Update Status
+            success = db.update_ticket_status(ticket_number, new_status)
+            
+            if success:
+                # 4. Log Activity
+                try:
+                    db.add_activity_log(
+                        gmail_id, 
+                        "STATUS_CHANGE", 
+                        f"Status changed to {new_status}", 
+                        request.user.get('username', 'System')
+                    )
+                except Exception as log_err:
+                    logger.error(f"Logging failed: {log_err}")
+                
+                db.disconnect()
+                return jsonify({'success': True, 'status': new_status})
+            else:
+                db.disconnect()
+                return jsonify({'error': 'Failed to update status'}), 500
+
         except Exception as e:
             return jsonify({'error': str(e)}), 500 
    

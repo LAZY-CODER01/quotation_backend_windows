@@ -275,7 +275,19 @@ class DuckDBService:
             logger.error(f"Error updating ticket status: {e}")
             return False
 
-    def get_all_extractions(self, limit=100):
+    def get_gmail_id_from_ticket(self, ticket_number):
+        """Helper to get gmail_id from ticket_number."""
+        try:
+            result = self.connection.execute(
+                "SELECT gmail_id FROM email_extractions WHERE ticket_number = ?", 
+                [ticket_number]
+            ).fetchone()
+            return result[0] if result else None
+        except Exception as e:
+            logger.error(f"Error getting gmail_id from ticket: {e}")
+            return None
+
+    def get_all_extractions(self, limit=100, status_filter=None):
         try:
             # ✅ FIX: Added quotation_files and quotation_amount to the list
             cols = """
@@ -285,10 +297,17 @@ class DuckDBService:
                 extraction_result, extraction_status, updated_at, created_at,assigned_to
             """
             
-            result = self.connection.execute(
-                f"SELECT {cols} FROM email_extractions ORDER BY received_at DESC LIMIT ?", 
-                [limit]
-            ).fetchall()
+            query = f"SELECT {cols} FROM email_extractions"
+            params = []
+
+            if status_filter:
+                query += " WHERE ticket_status = ?"
+                params.append(status_filter)
+            
+            query += " ORDER BY received_at DESC LIMIT ?"
+            params.append(limit)
+
+            result = self.connection.execute(query, params).fetchall()
             
             col_names = [c.strip() for c in cols.split(',')]
             extractions = []
