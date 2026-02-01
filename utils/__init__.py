@@ -8,6 +8,7 @@ import logging
 from .pdf_processor import pdf_to_markdown
 from .excel_processor import excel_to_markdown
 from .docx_processor import docx_to_markdown
+from .image_processor import image_to_markdown
 
 # Set up logging to catch errors
 logger = logging.getLogger(__name__)
@@ -28,6 +29,8 @@ def process_attachment(filename: str, content: bytes) -> str:
             return excel_to_markdown(content)
         elif filename_lower.endswith(('.docx', '.doc')):
             return docx_to_markdown(content)
+        elif filename_lower.endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp')):
+            return image_to_markdown(content)
         else:
             return f"# Unsupported File Type\n\nFile: {filename}\n\n*This file type is not supported for content extraction.*\n"
             

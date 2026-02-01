@@ -453,7 +453,7 @@ class GmailService:
             return None
 
     def _is_supported_file(self, filename):
-        return any(filename.lower().endswith(ext) for ext in ['.pdf', '.xlsx', '.xls', '.docx', '.doc'])
+        return any(filename.lower().endswith(ext) for ext in ['.pdf', '.xlsx', '.xls', '.docx', '.doc', '.png', '.jpg', '.jpeg', '.tiff', '.bmp'])
 
     def add_label_to_email(self, email_id, label_name, color):
         try:
