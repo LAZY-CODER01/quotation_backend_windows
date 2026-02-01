@@ -697,8 +697,9 @@ def create_flask_app():
         
         file = request.files['file']
         gmail_id = request.form.get('gmail_id')
-        po_number = request.form.get('po_number', '') # 👈 Capture PO Number
-        
+        po_number = request.form.get('po_number', '')
+        amount = request.form.get('amount', '0') # 👈 Capture Amount
+
         if file.filename == '' or not gmail_id:
             return jsonify({'error': 'No selected file or Ticket ID'}), 400
 
@@ -719,6 +720,7 @@ def create_flask_app():
             "name": filename,
             "url": file_url,
             "po_number": po_number,
+            "amount": amount,
             "uploaded_at": datetime.now().isoformat()
         }
 
