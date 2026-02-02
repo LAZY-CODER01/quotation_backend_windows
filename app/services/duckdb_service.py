@@ -287,7 +287,7 @@ class DuckDBService:
             logger.error(f"Error getting gmail_id from ticket: {e}")
             return None
 
-    def get_all_extractions(self, limit=50, offset=0, status_filter=None, user_role='user', username=None):
+    def get_all_extractions(self, limit=50, offset=0, status_filter=None, user_role='user', username=None, updated_after=None):
         try:
             # ✅ Added quotation_files and quotation_amount to the list
             cols = """
@@ -309,6 +309,16 @@ class DuckDBService:
                 query += " AND (assigned_to = ? OR assigned_to IS NULL OR assigned_to = '')"
                 params.append(username) # Current User
 
+            # ✅ DELTA SYNC LOGIC
+            if updated_after:
+                query += " AND updated_at > ?"
+                params.append(updated_after)
+                # If doing delta sync, we typically want ALL updates, enabling client to merge.
+                # We overwrite limit to be very large to fetch all updates
+                limit = 10000 
+                # Offset usually doesn't apply to delta sync in the same way (fetching "next page" of updates isn't standard pattern here)
+                # But we keep it in case needed, usually 0.
+            
             query += " ORDER BY received_at DESC LIMIT ? OFFSET ?"
             params.append(limit)
             params.append(offset)

@@ -263,6 +263,7 @@ def create_flask_app():
             page = int(request.args.get('page', 1)) 
             limit = int(request.args.get('limit', 50))
             offset = (page - 1) * limit
+            since = request.args.get('since') # ✅ Delta Sync Param
             
             # Extract User Context
             current_user = request.user
@@ -274,7 +275,8 @@ def create_flask_app():
                 offset=offset,
                 status_filter=status_filter,
                 user_role=user_role, 
-                username=username
+                username=username,
+                updated_after=since # ✅ Pass timestamp
             )
             count = len(extractions) # valid for this page
             # Ideally we should also return total_count for pagination UI
@@ -288,6 +290,7 @@ def create_flask_app():
                 'total': total_count,
                 'page': page,
                 'limit': limit,
+                'is_delta': bool(since), # ✅ Flag for Frontend
                 'data': extractions
             })
         except Exception as e:
