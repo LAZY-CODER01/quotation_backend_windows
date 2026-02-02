@@ -287,7 +287,7 @@ class DuckDBService:
             logger.error(f"Error getting gmail_id from ticket: {e}")
             return None
 
-    def get_all_extractions(self, limit=50, offset=0, status_filter=None, user_role='user', username=None, updated_after=None):
+    def get_all_extractions(self, limit=100, status_filter=None, user_role='user', username=None):
         try:
             # ✅ Added quotation_files and quotation_amount to the list
             cols = """
@@ -309,19 +309,8 @@ class DuckDBService:
                 query += " AND (assigned_to = ? OR assigned_to IS NULL OR assigned_to = '')"
                 params.append(username) # Current User
 
-            # ✅ DELTA SYNC LOGIC
-            if updated_after:
-                query += " AND updated_at > ?"
-                params.append(updated_after)
-                # If doing delta sync, we typically want ALL updates, enabling client to merge.
-                # We overwrite limit to be very large to fetch all updates
-                limit = 10000 
-                # Offset usually doesn't apply to delta sync in the same way (fetching "next page" of updates isn't standard pattern here)
-                # But we keep it in case needed, usually 0.
-            
-            query += " ORDER BY received_at DESC LIMIT ? OFFSET ?"
+            query += " ORDER BY received_at DESC LIMIT ?"
             params.append(limit)
-            params.append(offset)
 
             result = self.connection.execute(query, params).fetchall()
             
@@ -757,28 +746,6 @@ class DuckDBService:
             """, [username, gmail_id])
             self.connection.commit()
             return True
-            self.connection.commit()
-            return True
         except Exception as e:
             logger.error(f"Error assigning ticket: {e}")
             return False      
-
-    def get_total_count(self, status_filter=None, user_role='user', username=None):
-        """Get total count of tickets matching the filters."""
-        try:
-            query = "SELECT COUNT(*) FROM email_extractions WHERE 1=1"
-            params = []
-            
-            if status_filter:
-                query += " AND ticket_status = ?"
-                params.append(status_filter)
-            
-            if user_role != 'ADMIN':
-                query += " AND (assigned_to = ? OR assigned_to IS NULL OR assigned_to = '')"
-                params.append(username)
-                
-            result = self.connection.execute(query, params).fetchone()
-            return result[0] if result else 0
-        except Exception as e:
-            logger.error(f"Error getting total count: {str(e)}")
-            return 0      

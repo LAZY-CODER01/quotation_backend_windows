@@ -20,6 +20,3 @@ cloudinary
 pytesseract
 pdf2image
 Pillow
-flask-socketio
-gevent
-greenlet
