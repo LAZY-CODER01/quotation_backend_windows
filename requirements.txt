@@ -20,3 +20,5 @@ cloudinary
 pytesseract
 pdf2image
 Pillow
+flask-socketio
+eventlet

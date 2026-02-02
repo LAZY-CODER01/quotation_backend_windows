@@ -257,6 +257,9 @@ def create_flask_app():
             
             # Extract query params
             status_filter = request.args.get('status')
+            days = request.args.get('days')
+            before_date = request.args.get('before_date')
+            since = request.args.get('since')
             
             # Extract User Context
             current_user = request.user
@@ -267,7 +270,10 @@ def create_flask_app():
                 limit=1000, 
                 status_filter=status_filter,
                 user_role=user_role, 
-                username=username
+                username=username,
+                days=days,
+                before_date=before_date,
+                since=since
             )
             count = len(extractions)
             db_service.disconnect()

@@ -287,7 +287,7 @@ class DuckDBService:
             logger.error(f"Error getting gmail_id from ticket: {e}")
             return None
 
-    def get_all_extractions(self, limit=100, status_filter=None, user_role='user', username=None):
+    def get_all_extractions(self, limit=1000, status_filter=None, user_role='user', username=None, days=None, before_date=None, since=None):
         try:
             # ✅ Added quotation_files and quotation_amount to the list
             cols = """
@@ -299,6 +299,30 @@ class DuckDBService:
             
             query = f"SELECT {cols} FROM email_extractions WHERE 1=1"
             params = []
+
+            # 1. Delta Sync (Highest Priority)
+            if since:
+                # Fetch records UPDATED since 'since' timestamp
+                query += " AND updated_at > ?"
+                try:
+                    # Ensure format matches DB timestamp if needed, or rely on flexible parsing
+                    params.append(since)
+                except:
+                    pass
+
+            # 2. Date Range Filtering (Only if not doing a pure delta sync)
+            else:
+                if days:
+                    try:
+                        # Postgres/DuckDB syntax: CURRENT_TIMESTAMP - INTERVAL 'X days'
+                        # But parameterizing the number of days safely:
+                        query += f" AND received_at >= CURRENT_DATE - INTERVAL {int(days)} DAY"
+                    except:
+                        pass
+                
+                if before_date:
+                    query += " AND received_at < ?"
+                    params.append(before_date)
 
             if status_filter:
                 query += " AND ticket_status = ?"
