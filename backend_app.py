@@ -25,6 +25,7 @@ from app.auth.jwt_required import jwt_required
 from app.services.storage_service import StorageService
 
 from werkzeug.utils import secure_filename
+from app.extensions import socketio
 
 
 
@@ -88,6 +89,8 @@ def create_flask_app():
          origins=app.config.get('CORS_ORIGINS'),
          allow_headers=["Content-Type", "Authorization"],
          methods=["GET", "POST", "OPTIONS", "DELETE", "PUT"])
+    
+    socketio.init_app(app)
 
     # -------------------------------------------------------------------------
     # AUTHENTICATION ROUTES
@@ -257,6 +260,9 @@ def create_flask_app():
             
             # Extract query params
             status_filter = request.args.get('status')
+            page = int(request.args.get('page', 1)) 
+            limit = int(request.args.get('limit', 50))
+            offset = (page - 1) * limit
             
             # Extract User Context
             current_user = request.user
@@ -264,17 +270,24 @@ def create_flask_app():
             username = current_user.get('username')
 
             extractions = db_service.get_all_extractions(
-                limit=1000, 
+                limit=limit,
+                offset=offset,
                 status_filter=status_filter,
                 user_role=user_role, 
                 username=username
             )
-            count = len(extractions)
+            count = len(extractions) # valid for this page
+            # Ideally we should also return total_count for pagination UI
+            total_count = db_service.get_total_count(status_filter, user_role, username)
+            
             db_service.disconnect()
             
             return jsonify({
                 'success': True,
                 'count': count,
+                'total': total_count,
+                'page': page,
+                'limit': limit,
                 'data': extractions
             })
         except Exception as e:
@@ -916,4 +929,4 @@ if __name__ == '__main__':
     # This block is for local dev only
     setup_logging()
   
-    app.run(host='0.0.0.0', port=5001, debug=Config.DEBUG)
+    socketio.run(app, host='0.0.0.0', port=5001, debug=Config.DEBUG)

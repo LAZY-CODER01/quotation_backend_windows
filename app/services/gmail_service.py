@@ -32,6 +32,7 @@ from app.services.duckdb_service import DuckDBService
 # File processing utilities
 from config.settings import Config
 from utils import process_attachment
+from app.extensions import socketio
 
 logger = logging.getLogger(__name__)
 
@@ -334,10 +335,42 @@ class GmailService:
                 existing_record = db_service.get_extraction(gmail_id)
                 if existing_record:
                     db_service.update_extraction(gmail_id, extraction_result)
+                    event_type = 'UPDATE'
                 else:
                     db_service.insert_extraction(email_data, extraction_result)
+                    event_type = 'NEW'
                 
                 self.add_label_to_email(gmail_id, "SnapQuote-Fetched", "green")
+                
+                # Emit Socket Event
+                try:
+                    updated_ticket = db_service.get_extraction(gmail_id)
+                    if updated_ticket:
+                        # Convert datetime objects to string if needed, but jsonify usually handles isoformat if we use standard simplejson or similar. 
+                        # DuckDBService usually returns dicts with objects. 
+                        # Let's ensure serialization is safe. JSON dumps in backend_app handles it. 
+                        # socketio.emit uses json.dumps which might fail on datetime.
+                        # DuckDBService get_extraction returns some datetimes.
+                        # We should serialize them.
+                        # Ideally pass it through a serializer. 
+                        # For now, let's rely on standard serialization or converting.
+                        # Backend app uses jsonify. SocketIO uses json. 
+                        # Let's manually convert datetimes in the object if needed.
+                        # Checking DuckDBService: returns received_at as timestamp.
+                        # Let's simple format dates.
+                        
+                        def json_serial(obj):
+                            if isinstance(obj, (datetime, datetime.date)): 
+                                return obj.isoformat()
+                            raise TypeError ("Type %s not serializable" % type(obj))
+                            
+                        # Dump and Load to ensure clean JSON
+                        sanitized_data = json.loads(json.dumps(updated_ticket, default=str))
+                        
+                        socketio.emit('ticket_update', {'type': event_type, 'data': sanitized_data})
+                        logger.info(f"Emitted {event_type} event for {gmail_id}")
+                except Exception as emit_err:
+                    logger.error(f"Socket emit failed: {emit_err}")
                 
         except Exception as e:
             logger.error(f"AI extraction failed: {str(e)}")
