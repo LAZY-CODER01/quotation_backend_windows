@@ -837,14 +837,15 @@ class DuckDBService:
     def get_all_users_full(self):
         """Fetch a list of all users with full details (excluding password hash)."""
         try:
-            result = self.connection.execute("SELECT id, username, employee_code, role FROM users ORDER BY created_at DESC").fetchall()
+            result = self.connection.execute("SELECT id, username, employee_code, role,password_hash FROM users ORDER BY created_at DESC").fetchall()
             users = []
             for row in result:
                 users.append({
                     "id": str(row[0]),
                     "username": row[1],
                     "employee_code": row[2],
-                    "role": row[3]
+                    "role": row[3],
+                    "password_hash": row[4]
                 })
             return users
         except Exception as e:
