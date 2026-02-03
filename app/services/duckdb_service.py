@@ -526,8 +526,12 @@ class DuckDBService:
             logger.error(f"Error getting user by username: {str(e)}")
             return None
 
-    def create_user(self, username, password_hash, employee_code, role='user'):
+    def create_user(self, username, password_hash, employee_code=None, role='user'):
         try:
+            # Generate employee_code if not provided
+            if not employee_code:
+                employee_code = self._generate_next_employee_code()
+
             # Check if username or employee_code already exists
             check = self.connection.execute(
                 "SELECT 1 FROM users WHERE username = ? OR employee_code = ?", 
@@ -639,6 +643,37 @@ class DuckDBService:
         except Exception as e:
             logger.error(f"Error generating ID for {prefix}: {e}")
             return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+    def _generate_next_employee_code(self):
+        """
+        Generates the next employee code in the format EMP-XXX.
+        """
+        try:
+            prefix = "EMP-"
+            # Find the highest employee code
+            query = f"""
+                SELECT employee_code 
+                FROM users 
+                WHERE employee_code LIKE '{prefix}%'
+                ORDER BY employee_code DESC 
+                LIMIT 1
+            """
+            result = self.connection.execute(query).fetchone()
+
+            if result and result[0]:
+                last_code = result[0]
+                try:
+                    last_seq = int(last_code.split('-')[-1])
+                    new_seq = last_seq + 1
+                except ValueError:
+                    new_seq = 1
+            else:
+                new_seq = 1
+
+            return f"{prefix}{new_seq:03d}"
+        except Exception as e:
+            logger.error(f"Error generating employee code: {e}")
+            return f"EMP-{uuid.uuid4().hex[:4]}"
 
     def add_quotation_file(self, gmail_id, file_metadata):
         """
@@ -797,6 +832,23 @@ class DuckDBService:
             return [row[0] for row in result]
         except Exception as e:
             logger.error(f"Error getting user list: {e}")
+            return []
+
+    def get_all_users_full(self):
+        """Fetch a list of all users with full details (excluding password hash)."""
+        try:
+            result = self.connection.execute("SELECT id, username, employee_code, role FROM users ORDER BY created_at DESC").fetchall()
+            users = []
+            for row in result:
+                users.append({
+                    "id": str(row[0]),
+                    "username": row[1],
+                    "employee_code": row[2],
+                    "role": row[3]
+                })
+            return users
+        except Exception as e:
+            logger.error(f"Error getting full user list: {e}")
             return []    
     def assign_ticket(self, gmail_id, username):
         try:
