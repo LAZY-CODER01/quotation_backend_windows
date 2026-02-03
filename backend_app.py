@@ -97,8 +97,9 @@ def create_flask_app():
     # Load Config
     app.config.from_object(Config)
 
-    # CORS CONFIGURATION (No credentials needed for JWT usually, but good to have)
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    # CORS CONFIGURATION
+    # Use origins from config (env check) and allow credentials for auth headers/cookies
+    CORS(app, resources={r"/api/*": {"origins": app.config['CORS_ORIGINS']}}, supports_credentials=True)
 
 
     # -------------------------------------------------------------------------

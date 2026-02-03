@@ -10,3 +10,4 @@ az webapp config container set \
 az webapp restart \
   --name quotesnap-api \
   --resource-group quotesnap-rg -->
+<!-- v7+1-->
