@@ -260,6 +260,8 @@ def create_flask_app():
             days = request.args.get('days')
             before_date = request.args.get('before_date')
             since = request.args.get('since')
+            start_date = request.args.get('start_date')
+            end_date = request.args.get('end_date')
             
             # Extract User Context
             current_user = request.user
@@ -273,7 +275,9 @@ def create_flask_app():
                 username=username,
                 days=days,
                 before_date=before_date,
-                since=since
+                since=since,
+                start_date=start_date,
+                end_date=end_date
             )
             count = len(extractions)
             db_service.disconnect()

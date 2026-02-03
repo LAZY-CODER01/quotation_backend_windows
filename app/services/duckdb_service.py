@@ -287,7 +287,7 @@ class DuckDBService:
             logger.error(f"Error getting gmail_id from ticket: {e}")
             return None
 
-    def get_all_extractions(self, limit=1000, status_filter=None, user_role='user', username=None, days=None, before_date=None, since=None):
+    def get_all_extractions(self, limit=1000, status_filter=None, user_role='user', username=None, days=None, before_date=None, since=None, start_date=None, end_date=None):
         try:
             # ✅ Added quotation_files and quotation_amount to the list
             cols = """
@@ -312,7 +312,13 @@ class DuckDBService:
 
             # 2. Date Range Filtering (Only if not doing a pure delta sync)
             else:
-                if days:
+                # ✅ Explicit Date Range (New Feature)
+                if start_date and end_date:
+                    query += " AND received_at >= ? AND received_at <= ?"
+                    params.append(start_date)
+                    params.append(end_date)
+                
+                elif days:
                     try:
                         # Postgres/DuckDB syntax: CURRENT_TIMESTAMP - INTERVAL 'X days'
                         # But parameterizing the number of days safely:
@@ -596,6 +602,44 @@ class DuckDBService:
         except Exception as e:
             logger.error(f"Error updating ticket priority: {e}")
             return False   
+    def _generate_next_id(self, prefix, table_name, column_name):
+        """
+        Generates a globally sequential ID in the format PREFIX-YYYY-MM-XXX.
+        e.g., DBQ-2025-02-001, PO-2025-02-005
+        """
+        try:
+            now = datetime.now()
+            year = now.year
+            month = f"{now.month:02d}"
+            base_pattern = f"{prefix}-{year}-{month}-" # DBQ-2025-02-
+
+            # Query to find the highest ID for this month
+            # We filter by LIKE pattern and order descending
+            query = f"""
+                SELECT {column_name}
+                FROM {table_name}
+                WHERE {column_name} LIKE '{base_pattern}%'
+                ORDER BY {column_name} DESC
+                LIMIT 1
+            """
+            result = self.connection.execute(query).fetchone()
+
+            if result and result[0]:
+                last_id = result[0] # e.g., DBQ-2025-02-005
+                try:
+                    # Extract last part
+                    last_seq = int(last_id.split('-')[-1])
+                    new_seq = last_seq + 1
+                except ValueError:
+                    new_seq = 1
+            else:
+                new_seq = 1
+
+            return f"{base_pattern}{new_seq:03d}"
+        except Exception as e:
+            logger.error(f"Error generating ID for {prefix}: {e}")
+            return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
     def add_quotation_file(self, gmail_id, file_metadata):
         """
         Inserts a file record into the quotations table.
@@ -613,12 +657,9 @@ class DuckDBService:
             else:
                 ticket_number = row[0]
 
-            # 2. Generate DBQ Reference ID
-            try:
-                reference_id = ticket_number.replace("TKT", "DBQ")
-            except Exception as e:
-                logger.warning(f"Failed to generate DBQ ID: {e}")
-                reference_id = f"DBQ-{uuid.uuid4().hex[:8]}"
+            # 2. Global Sequential Reference ID (DBQ-YYYY-MM-XXX)
+            # Replaces ticket-dependent logic with global logic
+            reference_id = self._generate_next_id("DBQ", "quotations", "reference_id")
 
             # 3. Insert into quotations table
             # ✅ FIX: Use file_name, file_url
@@ -637,6 +678,7 @@ class DuckDBService:
         except Exception as e:
             logger.error(f"Error adding quotation file: {e}")
             return False
+
     def update_file_amount(self, gmail_id, file_id, amount):
         try:
             # Update amount in quotations table directly using the ID
@@ -662,13 +704,8 @@ class DuckDBService:
         else:
             ticket_number = row[0]
 
-        # 2. Generate PO Reference ID
-        # Logic: Replace TKT with PO
-        try:
-             reference_id = ticket_number.replace("TKT", "PO")
-        except Exception as e:
-            logger.warning(f"Failed to generate PO ID: {e}")
-            reference_id = f"PO-{uuid.uuid4().hex[:8]}"
+        # 2. Global Sequential PO Reference ID (PO-YYYY-MM-XXX)
+        reference_id = self._generate_next_id("PO", "cpo_orders", "reference_id")
 
         # 3. Insert into cpo_orders table
         # ✅ FIX: Use file_name, file_url
