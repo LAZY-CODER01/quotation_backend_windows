@@ -35,10 +35,24 @@ load_dotenv()
 company_gmail_service = None
 monitoring_thread = None
 monitoring_active = False
+monitoring_lock_file = None # Global to hold lock
+import fcntl # For file locking
 
 logger = logging.getLogger(__name__)
 
 def start_company_gmail_monitoring():
+    global monitoring_lock_file
+    
+    # Try to acquire lock
+    try:
+        lock_path = "/tmp/quotesnap_monitor.lock"
+        monitoring_lock_file = open(lock_path, 'w')
+        fcntl.lockf(monitoring_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        print("🔒 Worker acquired monitoring lock. Proceeding to start monitoring...")
+    except IOError:
+        print("🔒 Monitoring lock held by another worker. Skipping startup.")
+        return
+
     db = DuckDBService()
     if not db.connect():
         print("❌ DB connection failed for Gmail startup")
