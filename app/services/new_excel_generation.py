@@ -112,6 +112,11 @@ class ExcelGenerationService:
         red_bold_font = Font(name='Calibri', size=11, color="FF0000", bold=True)
         red_bold = Font(bold=True, color="FF0000", name="Calibri", size=12)
         red_bold_big = Font(bold=True, color="FF0000", name="Calibri", size=13)
+        # --- NEW FONTS ---
+        red_bold_large = Font(bold=True, color="FF0000", name="Calibri", size=14)
+        red_bold_extra_large = Font(bold=True, color="FF0000", name="Calibri", size=16)
+        red_bold_note = Font(bold=True, color="FF0000", name="Calibri", size=11)
+        
         bold_font = Font(bold=True, name='Calibri', size=11)
         italic_small = Font(italic=True, size=9, name='Calibri')
         
@@ -228,7 +233,8 @@ class ExcelGenerationService:
             TOTAL_ROW = last_data_row + 2
             VAT_ROW = TOTAL_ROW + 1
             GRAND_ROW = VAT_ROW + 1
-              
+            NOTE_ROW = GRAND_ROW + 1  # Note row immediately follows Grand Total
+
             # ---- TOTAL AMOUNT ----
             ws.merge_cells(start_row=TOTAL_ROW, start_column=1, end_row=TOTAL_ROW, end_column=8)
             ws.cell(row=TOTAL_ROW, column=1, value="Total Amount (AED).")
@@ -244,30 +250,45 @@ class ExcelGenerationService:
             ws.cell(row=GRAND_ROW, column=1, value="GRAND TOTAL AMOUNT (AED).")
             ws.cell(row=GRAND_ROW, column=9, value=f"=SUM(I{TOTAL_ROW}:I{VAT_ROW})")
 
-            # ---- APPLY FORMATTING FOR TOTAL/VAT ----
+            # ---- NOTE ROW ----
+            ws.merge_cells(start_row=NOTE_ROW, start_column=1, end_row=NOTE_ROW, end_column=9)
+            ws.cell(row=NOTE_ROW, column=1, value="NOTE :- STOCK AVAILBILITY AS PER THE QUOTATION DATE KINDLY CONFIRM AT THE TIME OF CONFIRMATION.")
+            
+            # ---- APPLY FORMATTING ----
+            
+            # 1. Total Amount & VAT (14pt Red Bold)
             for r in (TOTAL_ROW, VAT_ROW):
-                ws.cell(row=r, column=1).font = red_bold
-                ws.cell(row=r, column=9).font = red_bold
+                ws.row_dimensions[r].height = 30 # Increase height
+                ws.cell(row=r, column=1).font = red_bold_large
+                ws.cell(row=r, column=9).font = red_bold_large
                 ws.cell(row=r, column=1).alignment = right_align
                 ws.cell(row=r, column=9).alignment = center_align
                 ws.cell(row=r, column=9).number_format = "#,##0.00"
                 for c in range(1, 10):
-                    ws.cell(row=r, column=c).border = thick_border
+                    ws.cell(row=r, column=c).border = full_border # Full thin border
 
-            # ---- GRAND TOTAL SPECIAL STYLE ----
-            ws.cell(row=GRAND_ROW, column=1).font = red_bold_big
-            ws.cell(row=GRAND_ROW, column=9).font = red_bold_big
+            # 2. Grand Total (16pt Red Bold, Yellow Fill)
+            ws.row_dimensions[GRAND_ROW].height = 30 # Increase height
+            ws.cell(row=GRAND_ROW, column=1).font = red_bold_extra_large
+            ws.cell(row=GRAND_ROW, column=9).font = red_bold_extra_large
             ws.cell(row=GRAND_ROW, column=1).alignment = right_align
             ws.cell(row=GRAND_ROW, column=9).alignment = center_align
             ws.cell(row=GRAND_ROW, column=9).number_format = "#,##0.00"
             for c in range(1, 10):
                 cell = ws.cell(row=GRAND_ROW, column=c)
                 cell.fill = yellow_fill
-                cell.border = thick_border
+                cell.border = full_border # Full thin border
 
+            # 3. Note Row (Red Bold Note)
+
+            note_cell = ws.cell(row=NOTE_ROW, column=1)
+            note_cell.font = red_bold_note
+            note_cell.alignment = left_center_align
+            for c in range(1, 10):
+                ws.cell(row=NOTE_ROW, column=c).border = full_border
 
             # --- TERMS & CONDITIONS ---
-            TERMS_ROW = GRAND_ROW + 2
+            TERMS_ROW = NOTE_ROW + 1  # Start 2 rows after Note
 
             ws.merge_cells(start_row=TERMS_ROW, start_column=1, end_row=TERMS_ROW, end_column=9)
             t_cell = ws.cell(row=TERMS_ROW, column=1, value="TERMS:")
