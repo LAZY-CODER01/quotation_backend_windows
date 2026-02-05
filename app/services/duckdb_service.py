@@ -4,8 +4,14 @@ import os
 import logging
 import json
 from datetime import datetime
+import duckdb
+import os
+import logging
+import json
+from datetime import datetime
 import uuid
 from config.settings import Config
+from app.utils.helpers import get_uae_time
 
 logger = logging.getLogger(__name__)
 
@@ -243,8 +249,8 @@ class DuckDBService:
                 INSERT INTO email_extractions (
                     gmail_id, ticket_number, ticket_status, ticket_priority,
                     sender, received_at, subject, body_text, 
-                    extraction_result, extraction_status, updated_at, assigned_to
-                ) VALUES (?, ?, 'INBOX', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    extraction_result, extraction_status, updated_at, assigned_to, created_at
+                ) VALUES (?, ?, 'INBOX', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (gmail_id) DO UPDATE SET
                     extraction_result = EXCLUDED.extraction_result,
                     extraction_status = EXCLUDED.extraction_status,
@@ -254,7 +260,7 @@ class DuckDBService:
                 email_data.get('gmail_id'), ticket_number, priority,
                 email_data.get('sender', ''), email_data.get('received_at'),
                 email_data.get('subject', ''), body_text,
-                extraction_result_json, status, datetime.now(), assigned_to_user
+                extraction_result_json, status, get_uae_time(), assigned_to_user, get_uae_time()
             ])
             self.connection.commit()
             return True
@@ -266,9 +272,9 @@ class DuckDBService:
         try:
             self.connection.execute("""
                 UPDATE email_extractions 
-                SET ticket_status = ?, updated_at = CURRENT_TIMESTAMP
+                SET ticket_status = ?, updated_at = ?
                 WHERE ticket_number = ?
-            """, [new_status, ticket_number])
+            """, [new_status, get_uae_time(), ticket_number])
             self.connection.commit()
             return True
         except Exception as e:
@@ -464,7 +470,7 @@ class DuckDBService:
     def update_extraction(self, gmail_id, extraction_result):
         try:
             self.connection.execute("UPDATE email_extractions SET extraction_result = ?, updated_at = ? WHERE gmail_id = ?", 
-                                  [json.dumps(extraction_result), datetime.now(), gmail_id])
+                                  [json.dumps(extraction_result), get_uae_time(), gmail_id])
             self.connection.commit()
             return True
         except: return False
@@ -473,7 +479,7 @@ class DuckDBService:
     
     def save_user_token(self, user_id, token_json_str):
         try:
-            current_time = datetime.now()
+            current_time = get_uae_time()
             query = """
                 INSERT INTO user_tokens (user_id, token_json, updated_at)
                 VALUES (?, ?, ?)
@@ -543,11 +549,11 @@ class DuckDBService:
                 return None
 
             q = """
-                INSERT INTO users (username, password_hash, employee_code, role) 
-                VALUES (?, ?, ?, ?)
+                INSERT INTO users (username, password_hash, employee_code, role, created_at) 
+                VALUES (?, ?, ?, ?, ?)
                 RETURNING id
             """
-            result = self.connection.execute(q, [username, password_hash, employee_code, role]).fetchone()
+            result = self.connection.execute(q, [username, password_hash, employee_code, role, get_uae_time()]).fetchone()
             self.connection.commit()
             if result: return str(result[0])
             return None
@@ -598,9 +604,9 @@ class DuckDBService:
 
             self.connection.execute("""
                 UPDATE email_extractions 
-                SET ticket_priority = ?, updated_at = CURRENT_TIMESTAMP
+                SET ticket_priority = ?, updated_at = ?
                 WHERE gmail_id = ?
-            """, [new_priority, gmail_id])
+            """, [new_priority, get_uae_time(), gmail_id])
             self.connection.commit()
             return True
         except Exception as e:
@@ -612,7 +618,7 @@ class DuckDBService:
         e.g., DBQ-2025-02-001, PO-2025-02-005
         """
         try:
-            now = datetime.now()
+            now = get_uae_time()
             year = now.year
             month = f"{now.month:02d}"
             base_pattern = f"{prefix}-{year}-{month}-" # DBQ-2025-02-
@@ -700,13 +706,13 @@ class DuckDBService:
             # ✅ FIX: Use file_name, file_url
             self.connection.execute("""
                 INSERT INTO quotations (ticket_number, reference_id, file_name, file_url, amount, uploaded_at)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """, [ticket_number, reference_id, file_metadata.get('name'), file_metadata.get('url'), file_metadata.get('amount')])
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, [ticket_number, reference_id, file_metadata.get('name'), file_metadata.get('url'), file_metadata.get('amount'), get_uae_time()])
             
             # 4. Update Status and Timestamp on Main Ticket
             self.connection.execute(
-                "UPDATE email_extractions SET ticket_status = 'SENT', updated_at = CURRENT_TIMESTAMP WHERE gmail_id = ?", 
-                [gmail_id]
+                "UPDATE email_extractions SET ticket_status = 'SENT', updated_at = ? WHERE gmail_id = ?", 
+                [get_uae_time(), gmail_id]
             )
             self.connection.commit()
             return True
@@ -746,13 +752,13 @@ class DuckDBService:
         # ✅ FIX: Use file_name, file_url
         self.connection.execute("""
             INSERT INTO cpo_orders (ticket_number, reference_id, file_name, file_url, amount, uploaded_at)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        """, [ticket_number, reference_id, file_metadata.get('name'), file_metadata.get('url'), file_metadata.get('amount')])
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, [ticket_number, reference_id, file_metadata.get('name'), file_metadata.get('url'), file_metadata.get('amount'), get_uae_time()])
         
         # 4. Update Status and Timestamp on Main Ticket
         self.connection.execute(
-            "UPDATE email_extractions SET ticket_status = 'ORDER_CONFIRMED', updated_at = CURRENT_TIMESTAMP WHERE gmail_id = ?", 
-            [gmail_id]
+            "UPDATE email_extractions SET ticket_status = 'ORDER_CONFIRMED', updated_at = ? WHERE gmail_id = ?", 
+            [get_uae_time(), gmail_id]
         )
         self.connection.commit()
         return True
@@ -776,8 +782,8 @@ class DuckDBService:
             existing_notes.append(note_data)
             
             self.connection.execute(
-                "UPDATE email_extractions SET internal_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE gmail_id = ?", 
-                [json.dumps(existing_notes), gmail_id]
+                "UPDATE email_extractions SET internal_notes = ?, updated_at = ? WHERE gmail_id = ?", 
+                [json.dumps(existing_notes), get_uae_time(), gmail_id]
             )
             self.connection.commit()
             return True
@@ -808,7 +814,8 @@ class DuckDBService:
                 "action": action,
                 "description": description,
                 "user": user,
-                "timestamp": datetime.now().isoformat(),
+                "user": user,
+                "timestamp": get_uae_time().isoformat(),
                 "metadata": metadata or {}
             }
 
@@ -816,8 +823,8 @@ class DuckDBService:
             existing_logs.append(log_entry)
             
             self.connection.execute(
-                "UPDATE email_extractions SET activity_logs = ? WHERE gmail_id = ?", 
-                [json.dumps(existing_logs), gmail_id]
+                "UPDATE email_extractions SET activity_logs = ?, updated_at = ? WHERE gmail_id = ?", 
+                [json.dumps(existing_logs), get_uae_time(), gmail_id]
             )
             self.connection.commit()
             return log_entry # 👈 ✅ RETURN THE OBJECT SO APP.PY CAN USE IT
@@ -855,11 +862,31 @@ class DuckDBService:
         try:
             self.connection.execute("""
                 UPDATE email_extractions 
-                SET assigned_to = ?, updated_at = CURRENT_TIMESTAMP 
+                SET assigned_to = ?, updated_at = ? 
                 WHERE gmail_id = ?
-            """, [username, gmail_id])
+            """, [username, get_uae_time(), gmail_id])
             self.connection.commit()
             return True
         except Exception as e:
             logger.error(f"Error assigning ticket: {e}")
-            return False      
+            return False
+
+    def delete_quotation_file(self, file_id):
+        """Delete a quotation file from the database."""
+        try:
+            self.connection.execute("DELETE FROM quotations WHERE id = ?", [file_id])
+            self.connection.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting quotation file: {e}")
+            return False
+
+    def delete_cpo_file(self, file_id):
+        """Delete a CPO file from the database."""
+        try:
+            self.connection.execute("DELETE FROM cpo_orders WHERE id = ?", [file_id])
+            self.connection.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting CPO file: {e}")
+            return False

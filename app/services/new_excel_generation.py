@@ -230,7 +230,7 @@ class ExcelGenerationService:
         try:
             last_data_row = START_ROW + max(actual_rows, 1) - 1
             
-            TOTAL_ROW = last_data_row + 2
+            TOTAL_ROW = last_data_row + 1
             VAT_ROW = TOTAL_ROW + 1
             GRAND_ROW = VAT_ROW + 1
             NOTE_ROW = GRAND_ROW + 1  # Note row immediately follows Grand Total
@@ -258,7 +258,7 @@ class ExcelGenerationService:
             
             # 1. Total Amount & VAT (14pt Red Bold)
             for r in (TOTAL_ROW, VAT_ROW):
-                ws.row_dimensions[r].height = 30 # Increase height
+                ws.row_dimensions[r].height = 20 # Increase height
                 ws.cell(row=r, column=1).font = red_bold_large
                 ws.cell(row=r, column=9).font = red_bold_large
                 ws.cell(row=r, column=1).alignment = right_align
@@ -268,7 +268,7 @@ class ExcelGenerationService:
                     ws.cell(row=r, column=c).border = full_border # Full thin border
 
             # 2. Grand Total (16pt Red Bold, Yellow Fill)
-            ws.row_dimensions[GRAND_ROW].height = 30 # Increase height
+            ws.row_dimensions[GRAND_ROW].height = 25 # Increase height
             ws.cell(row=GRAND_ROW, column=1).font = red_bold_extra_large
             ws.cell(row=GRAND_ROW, column=9).font = red_bold_extra_large
             ws.cell(row=GRAND_ROW, column=1).alignment = right_align
@@ -300,7 +300,7 @@ class ExcelGenerationService:
 
             # ---- TERMS ROWS ----
             terms_data = [
-                ("Price:", ""),
+                ("Price:", "Ex Warehouse Dubai, Packed."),
                 ("Delivery:", "Stated in Description Column Against Each Item."),
                 ("Payment:", "30 Days Credit."),
                 ("Validity:", "15 days from offer date.")
@@ -323,19 +323,52 @@ class ExcelGenerationService:
                     ws.cell(row=current_row, column=c).border = full_border
 
             # --- FOOTER MESSAGES & DYNAMIC PRINT AREA ---
-            MSG_ROW = current_row + 2
+            # --- FOOTER MESSAGES & DYNAMIC PRINT AREA ---
+            # Define rows for footer structure
+            # current_row (Terms End) -> Spacer (1) -> Msg -> Spacer (1) -> Regards -> Company -> Spacer (2) -> Disclaimer
             
-            ws.merge_cells(start_row=MSG_ROW, start_column=1, end_row=MSG_ROW, end_column=9)
+            FS_START = current_row + 1
+            MSG_ROW = FS_START + 1
+            REGARDS_ROW = MSG_ROW + 2
+            COMPANY_ROW = REGARDS_ROW + 1
+            DISCLAIMER_ROW = COMPANY_ROW + 3
+            FS_END = DISCLAIMER_ROW
+            
+            # Apply borders to the entire block (Outline only, no inner grid)
+            for r in range(FS_START, FS_END + 1):
+                # Merge row first
+                ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=9)
+                
+                for c in range(1, 10):
+                    # Determine borders based on position
+                    b_left = thin_side if c == 1 else None
+                    b_right = thin_side if c == 9 else None
+                    b_bottom = thin_side if r == FS_END else None
+                    # Top border is handled by the row above (Terms), so None here to avoid double/inner lines
+                    
+                    cell_border = Border(left=b_left, right=b_right, top=None, bottom=b_bottom)
+                    ws.cell(row=r, column=c).border = cell_border
+            
+            # 1. Message
             ws.cell(row=MSG_ROW, column=1, value="Please revert for clarifications if any. Thank you for providing an opportunity to quote.")
-           
-            ws.cell(row=MSG_ROW + 3, column=1, value="Best Regards,")
+            ws.cell(row=MSG_ROW, column=1).alignment = left_center_align
+            
+            # 2. Best Regards
+            ws.cell(row=REGARDS_ROW, column=1, value="Best Regards,")
+            ws.cell(row=REGARDS_ROW, column=1).alignment = left_center_align
+            
+            # 3. Company Name (Bold)
+            ws.cell(row=COMPANY_ROW, column=1, value="Dbest Building Hardware and Tools Trading LLC.")
+            ws.cell(row=COMPANY_ROW, column=1).font = bold_font
+            ws.cell(row=COMPANY_ROW, column=1).alignment = left_center_align
         
-            SIGNATURE_ROW = MSG_ROW + 6
-            disc_cell = ws.cell(row=SIGNATURE_ROW, column=1, value="(This message has been electronically transmitted and does not require a signature).")
+            # 4. Disclaimer
+            disc_cell = ws.cell(row=DISCLAIMER_ROW, column=1, value="(This message has been electronically transmitted and does not require a signature).")
             disc_cell.font = italic_small
+            disc_cell.alignment = left_center_align
 
             # THE FIX: Extend Blue Line to include template's contact bar images
-            FINAL_PRINT_ROW = SIGNATURE_ROW + 15 
+            FINAL_PRINT_ROW = DISCLAIMER_ROW + 15 
             ws.print_area = f'A1:I{FINAL_PRINT_ROW}'
 
             # Force scaling to fit content

@@ -23,6 +23,7 @@ from config.settings import Config
 from app.auth.jwt_utils import create_jwt
 from app.auth.jwt_required import jwt_required
 from app.services.storage_service import StorageService
+from app.utils.helpers import get_uae_time
 
 from werkzeug.utils import secure_filename
 
@@ -401,7 +402,7 @@ def create_flask_app():
             # Create filename
             subject = extraction_data.get('subject', 'quotation')[:30]
             clean_subject = "".join(c for c in subject if c.isalnum() or c in (' ', '-', '_')).rstrip()
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = get_uae_time().strftime("%Y%m%d_%H%M%S")
             download_filename = f"Quotation_{clean_subject}_{timestamp}.xlsx"
 
             return send_file(
@@ -740,7 +741,9 @@ def create_flask_app():
                 "name": filename,
                 "url": file_url,      # Cloudinary URL
                 "amount": amount,
-                "uploaded_at": datetime.now().isoformat()
+                "url": file_url,      # Cloudinary URL
+                "amount": amount,
+                "uploaded_at": get_uae_time().isoformat()
             }
 
             # Save Metadata to DuckDB
@@ -750,12 +753,20 @@ def create_flask_app():
                 if success:
                     # ✅ Log Activity
                     try:
+                        # 1. Log Upload
                         db.add_activity_log(
                             gmail_id, 
                             "QUOTATION_UPLOAD", 
                             f"Uploaded quotation: {filename}", 
                             request.user.get('username', 'System'),
                             metadata={"file_id": file_id, "amount": amount}
+                        )
+                        # 2. Log Status Change (Explicitly)
+                        db.add_activity_log(
+                            gmail_id, 
+                            "STATUS_CHANGE", 
+                            "Status changed to SENT", 
+                            request.user.get('username', 'System')
                         )
                     except Exception as log_err:
                         logger.error(f"Logging failed: {log_err}")
@@ -802,7 +813,9 @@ def create_flask_app():
             "url": file_url,
             "po_number": po_number,
             "amount": amount,
-            "uploaded_at": datetime.now().isoformat()
+            "po_number": po_number,
+            "amount": amount,
+            "uploaded_at": get_uae_time().isoformat()
         }
 
         db = DuckDBService()
@@ -811,12 +824,20 @@ def create_flask_app():
             if success:
                 # ✅ Log Activity
                 try:
+                    # 1. Log Upload
                     db.add_activity_log(
                         gmail_id, 
                         "CPO_UPLOAD", 
                         f"Uploaded CPO: {filename}", 
                         request.user.get('username', 'System'),
                         metadata={"file_id": file_id, "po_number": po_number}
+                    )
+                    # 2. Log Status Change (Explicitly)
+                    db.add_activity_log(
+                        gmail_id, 
+                        "STATUS_CHANGE", 
+                        "Status changed to ORDER_CONFIRMED", 
+                        request.user.get('username', 'System')
                     )
                 except Exception as log_err:
                     logger.error(f"Logging failed: {log_err}")
@@ -917,7 +938,46 @@ def create_flask_app():
             return jsonify({'error': str(e)}), 500 
     @app.route('/api/health')
     def health():
-        return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
+        return jsonify({"status": "ok", "timestamp": get_uae_time().isoformat()})
+
+    # 3. Endpoint to Delete Quotation File (Admin Only)
+    @app.route('/api/quotation/delete/<file_id>', methods=['DELETE'])
+    @jwt_required(roles=['ADMIN'])
+    def delete_quotation_file(file_id):
+        try:
+            db = DuckDBService()
+            if db.connect():
+                success = db.delete_quotation_file(file_id)
+                db.disconnect()
+                
+                if success:
+                    return jsonify({'success': True, 'message': 'Quotation file deleted successfully'})
+                else:
+                    return jsonify({'error': 'Failed to delete file'}), 500
+                    
+            return jsonify({'error': 'DB Connection failed'}), 500
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    # 4. Endpoint to Delete CPO File (Admin Only)
+    @app.route('/api/cpo/delete/<file_id>', methods=['DELETE'])
+    @jwt_required(roles=['ADMIN'])
+    def delete_cpo_file(file_id):
+        try:
+            db = DuckDBService()
+            if db.connect():
+                success = db.delete_cpo_file(file_id)
+                db.disconnect()
+                
+                if success:
+                    return jsonify({'success': True, 'message': 'CPO file deleted successfully'})
+                else:
+                    return jsonify({'error': 'Failed to delete file'}), 500
+                    
+            return jsonify({'error': 'DB Connection failed'}), 500
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
 
     # Proxy Fix for Docker/Reverse Proxy
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)

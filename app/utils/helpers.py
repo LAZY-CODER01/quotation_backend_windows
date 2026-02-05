@@ -12,6 +12,12 @@ from datetime import datetime, date
 import hashlib
 import secrets
 import uuid
+from datetime import datetime, date, timedelta, timezone
+
+def get_uae_time():
+    """Returns current time in UAE timezone (UTC+4)."""
+    # UAE is UTC+4
+    return datetime.now(timezone.utc) + timedelta(hours=4)
 
 logger = logging.getLogger(__name__)
 
