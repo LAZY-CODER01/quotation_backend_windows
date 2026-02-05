@@ -652,6 +652,100 @@ def create_flask_app():
 
         except Exception as e:
             return jsonify({'error': str(e)}), 500 
+
+    @app.route('/api/ticket/update-details', methods=['POST'])
+    @jwt_required()
+    def update_ticket_details_route():
+        """
+        Update generic ticket details (Subject, Sender, Date).
+        """
+        try:
+            data = request.get_json()
+            gmail_id = data.get('gmail_id')
+            subject = data.get('subject')
+            sender_name = data.get('sender_name')
+            sender_email = data.get('sender_email')
+            received_at = data.get('received_at')
+
+            if not gmail_id:
+                return jsonify({'error': 'gmail_id is required'}), 400
+
+            db = DuckDBService()
+            if not db.connect():
+                return jsonify({'error': 'Database connection failed'}), 500
+
+            # Fetch existing ticket to compare for logging
+            existing = db.get_extraction(gmail_id)
+            if not existing:
+                db.disconnect()
+                return jsonify({'error': 'Ticket not found'}), 404
+
+            updates = {}
+            logs = []
+
+            # 1. Handle Subject
+            if subject and subject != existing.get('subject'):
+                updates['subject'] = subject
+                logs.append(f"Subject changed from '{existing.get('subject')}' to '{subject}'")
+
+            # 2. Handle Sender
+            # Current sender format: "Name <email>" or just "email"
+            current_sender_str = existing.get('sender', '')
+            new_sender_str = current_sender_str
+
+            if sender_name or sender_email:
+                # If only one is provided, try to parse the other from existing, or use defaults
+                # Basic parsing of existing:
+                try:
+                    if '<' in current_sender_str:
+                        parts = current_sender_str.split('<')
+                        existing_name = parts[0].strip()
+                        existing_email = parts[1].replace('>', '').strip()
+                    else:
+                        existing_name = current_sender_str
+                        existing_email = current_sender_str if '@' in current_sender_str else ''
+                except:
+                    existing_name = current_sender_str
+                    existing_email = ''
+
+                final_name = sender_name if sender_name is not None else existing_name
+                final_email = sender_email if sender_email is not None else existing_email
+                
+                new_sender_str = f"{final_name} <{final_email}>" if final_email else final_name
+                
+                if new_sender_str != current_sender_str:
+                    updates['sender'] = new_sender_str
+                    logs.append(f"Sender info updated")
+
+            # 3. Handle Date
+            if received_at and received_at != existing.get('received_at'):
+                updates['received_at'] = received_at
+                logs.append(f"Received date changed to {received_at}")
+
+            if not updates:
+                db.disconnect()
+                return jsonify({'success': True, 'message': 'No changes detected'})
+
+            # Apply Updates
+            success = db.update_ticket_details(gmail_id, updates)
+            
+            if success:
+                # Log usage
+                for log_desc in logs:
+                     db.add_activity_log(
+                        gmail_id, 
+                        "EDIT_DETAILS", 
+                        log_desc, 
+                        request.user.get('username', 'System')
+                    )
+                db.disconnect()
+                return jsonify({'success': True})
+            else:
+                db.disconnect()
+                return jsonify({'error': 'Failed to update details'}), 500
+
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500 
    
 
     @app.route('/api/ticket/update-file-amount', methods=['POST'])

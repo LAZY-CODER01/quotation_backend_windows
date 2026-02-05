@@ -798,44 +798,79 @@ class DuckDBService:
 
     def add_activity_log(self, gmail_id, action, description, user, metadata=None):
         """
-        Appends a new log entry to the activity_logs JSON list.
+        Appends an activity log to the ticket.
         """
         try:
-            # 1. Fetch existing logs
             row = self.connection.execute("SELECT activity_logs FROM email_extractions WHERE gmail_id = ?", [gmail_id]).fetchone()
-            if not row: return None # 👈 Changed from False to None
+            if not row: return False
             
-            existing_logs = []
+            logs = []
             if row[0]:
                 try:
-                    existing_logs = json.loads(row[0])
-                    if not isinstance(existing_logs, list): existing_logs = []
+                    logs = json.loads(row[0])
+                    if not isinstance(logs, list): logs = []
                 except:
-                    existing_logs = []
+                    logs = []
 
-            # 2. Create new log entry
-            log_entry = {
+            new_log = {
                 "id": str(uuid.uuid4()),
                 "action": action,
                 "description": description,
                 "user": user,
-                "user": user,
                 "timestamp": get_uae_time().isoformat(),
                 "metadata": metadata or {}
             }
-
-            # 3. Append and save
-            existing_logs.append(log_entry)
+            
+            logs.append(new_log)
             
             self.connection.execute(
-                "UPDATE email_extractions SET activity_logs = ?, updated_at = ? WHERE gmail_id = ?", 
-                [json.dumps(existing_logs), get_uae_time(), gmail_id]
+                "UPDATE email_extractions SET activity_logs = ? WHERE gmail_id = ?", 
+                [json.dumps(logs), gmail_id]
             )
             self.connection.commit()
-            return log_entry # 👈 ✅ RETURN THE OBJECT SO APP.PY CAN USE IT
+            return True
         except Exception as e:
-            logger.error(f"Error adding activity log: {e}")
-            return None 
+            logger.error(f"Error adding log: {e}")
+            return False
+
+    def update_ticket_details(self, gmail_id, updates):
+        """
+        Update generic ticket details (Subject, Sender, Date).
+        updates dict: { 'subject': ..., 'sender': ..., 'received_at': ... }
+        """
+        try:
+            # Build dynamic update query
+            fields = []
+            values = []
+            
+            if 'subject' in updates:
+                fields.append("subject = ?")
+                values.append(updates['subject'])
+                
+            if 'sender' in updates:
+                fields.append("sender = ?")
+                values.append(updates['sender'])
+                
+            if 'received_at' in updates:
+                fields.append("received_at = ?")
+                values.append(updates['received_at'])
+                
+            if not fields:
+                return False
+                
+            fields.append("updated_at = ?")
+            values.append(get_uae_time())
+            
+            values.append(gmail_id) # For WHERE clause
+            
+            query = f"UPDATE email_extractions SET {', '.join(fields)} WHERE gmail_id = ?"
+            
+            self.connection.execute(query, values)
+            self.connection.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating ticket details: {e}")
+            return False 
     def get_all_users_list(self):
         """Fetch a list of all usernames for the dropdown."""
         try:
