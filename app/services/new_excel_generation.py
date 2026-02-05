@@ -29,12 +29,17 @@ class ExcelGenerationService:
         self.template_path = template_path
         self.output_dir = output_dir
 
-        # Ensure output directory exists
+        # Ensure output directory exists - safer cleanup for Docker to avoid "Device Busy"
         if os.path.exists(output_dir):
-            try:
-                shutil.rmtree(output_dir)
-            except Exception as e:
-                logger.error(f"Failed to clean output dir: {e}")
+            for filename in os.listdir(output_dir):
+                file_path = os.path.join(output_dir, filename)
+                try:
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        os.unlink(file_path)
+                    elif os.path.isdir(file_path):
+                        shutil.rmtree(file_path)
+                except Exception as e:
+                    logger.error(f"Failed to delete {file_path}. Reason: {e}")
         
         os.makedirs(output_dir, exist_ok=True)
         logger.info(f"Excel Service initialized. Template: {template_path}")
@@ -158,7 +163,7 @@ class ExcelGenerationService:
                 # Col 7: UNIT (BOLD)
                 cell_unit = ws.cell(row=row, column=7)
                 cell_unit.value = item.get("Unit", "")
-                cell_unit.font = bold_font  # <--- Unit is now BOLD
+                cell_unit.font = bold_font
 
                 # Col 8: UNIT PRICE (BOLD)
                 price_val = self._to_float(item.get("Unit price", 0))
@@ -185,14 +190,14 @@ class ExcelGenerationService:
                 cell_pct = ws.cell(row=row, column=12)
                 cell_pct.value = 0.00
                 cell_pct.number_format = "0.00%"
-                cell_pct.fill = light_green_fill # <--- COLOR APPLIED
+                cell_pct.fill = light_green_fill
 
                 # Col M (13): Profit Formula (BOLD + Light Blue Background)
                 cell_profit = ws.cell(row=row, column=13)
                 cell_profit.value = f"=(N{row}-K{row})*F{row}"
                 cell_profit.number_format = "#,##0.00"
                 cell_profit.font = bold_font
-                cell_profit.fill = light_blue_fill # <--- COLOR APPLIED
+                cell_profit.fill = light_blue_fill
 
                 # Col N (14): SP Formula (BOLD)
                 cell_sp = ws.cell(row=row, column=14)
@@ -261,8 +266,6 @@ class ExcelGenerationService:
                 cell.border = thick_border
 
 
-
-
             # --- TERMS & CONDITIONS ---
             TERMS_ROW = GRAND_ROW + 2
 
@@ -282,29 +285,42 @@ class ExcelGenerationService:
                 ("Validity:", "15 days from offer date.")
             ]
 
+            # Fix: Track current_row for footer logic
+            current_row = TERMS_ROW
             for i, (label, value) in enumerate(terms_data):
-                r = TERMS_ROW + 1 + i
-                ws.cell(row=r, column=1, value=label)
-                ws.cell(row=r, column=1).font = bold_font
-                ws.cell(row=r, column=1).alignment = left_center_align
+                current_row = TERMS_ROW + 1 + i
+                ws.cell(row=current_row, column=1, value=label)
+                ws.cell(row=current_row, column=1).font = bold_font
+                ws.cell(row=current_row, column=1).alignment = left_center_align
 
-                ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=9)
-                ws.cell(row=r, column=2, value=value)
-                ws.cell(row=r, column=2).font = bold_font
-                ws.cell(row=r, column=2).alignment = left_center_align
+                ws.merge_cells(start_row=current_row, start_column=2, end_row=current_row, end_column=9)
+                ws.cell(row=current_row, column=2, value=value)
+                ws.cell(row=current_row, column=2).font = bold_font
+                ws.cell(row=current_row, column=2).alignment = left_center_align
 
                 for c in range(1, 10):
-                    ws.cell(row=r, column=c).border = full_border
+                    ws.cell(row=current_row, column=c).border = full_border
 
-            # --- FOOTER MESSAGES ---
-            MSG_ROW = TERMS_ROW + len(terms_data) + 2
-            ws.merge_cells(start_row=MSG_ROW, start_column=1, end_row=MSG_ROW, end_column=10)
+            # --- FOOTER MESSAGES & DYNAMIC PRINT AREA ---
+            MSG_ROW = current_row + 2
+            
+            ws.merge_cells(start_row=MSG_ROW, start_column=1, end_row=MSG_ROW, end_column=9)
             ws.cell(row=MSG_ROW, column=1, value="Please revert for clarifications if any. Thank you for providing an opportunity to quote.")
            
             ws.cell(row=MSG_ROW + 3, column=1, value="Best Regards,")
         
-            disc_cell = ws.cell(row=MSG_ROW + 6, column=1, value="(This message has been electronically transmitted and does not require a signature).")
+            SIGNATURE_ROW = MSG_ROW + 6
+            disc_cell = ws.cell(row=SIGNATURE_ROW, column=1, value="(This message has been electronically transmitted and does not require a signature).")
             disc_cell.font = italic_small
+
+            # THE FIX: Extend Blue Line to include template's contact bar images
+            FINAL_PRINT_ROW = SIGNATURE_ROW + 15 
+            ws.print_area = f'A1:I{FINAL_PRINT_ROW}'
+
+            # Force scaling to fit content
+            ws.sheet_properties.pageSetUpPr.fitToPage = True
+            ws.page_setup.fitToWidth = 1
+            ws.page_setup.fitToHeight = 0 
 
         except Exception as e:
             logger.error(f"Error writing totals/footer: {e}")
