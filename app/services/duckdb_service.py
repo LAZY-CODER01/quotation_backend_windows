@@ -689,14 +689,17 @@ class DuckDBService:
             # 1. Fetch ticket_number
             row = self.connection.execute("SELECT ticket_number FROM email_extractions WHERE gmail_id = ?", [gmail_id]).fetchone()
             
+            if not row:
+                return False, f"Email with ID {gmail_id} not found"
+            
+            ticket_number = row[0]
+
             # ✅ FIX: Handle missing ticket number by generating one
-            if not row or not row[0]:
+            if not ticket_number:
                 logger.info(f"Ticket number missing for {gmail_id}. Generating new one...")
                 ticket_number = self._generate_next_ticket_number()
                 self.connection.execute("UPDATE email_extractions SET ticket_number = ? WHERE gmail_id = ?", [ticket_number, gmail_id])
-                self.connection.commit()
-            else:
-                ticket_number = row[0]
+                # No commit needed here as we commit at the end
 
             # 2. Global Sequential Reference ID (DBQ-YYYY-MM-XXX)
             # Replaces ticket-dependent logic with global logic
@@ -705,8 +708,8 @@ class DuckDBService:
             # 3. Insert into quotations table
             # ✅ FIX: Use file_name, file_url
             self.connection.execute("""
-                INSERT INTO quotations (ticket_number, reference_id, file_name, file_url, amount, uploaded_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO quotations (id, ticket_number, reference_id, file_name, file_url, amount, uploaded_at)
+                VALUES (nextval('id_sequence'), ?, ?, ?, ?, ?, ?)
             """, [ticket_number, reference_id, file_metadata.get('name'), file_metadata.get('url'), file_metadata.get('amount'), get_uae_time()])
             
             # 4. Update Status and Timestamp on Main Ticket
@@ -715,10 +718,10 @@ class DuckDBService:
                 [get_uae_time(), gmail_id]
             )
             self.connection.commit()
-            return True
+            return True, "Success"
         except Exception as e:
             logger.error(f"Error adding quotation file: {e}")
-            return False
+            return False, str(e)
 
     def update_file_amount(self, gmail_id, file_id, amount):
         try:
@@ -736,14 +739,16 @@ class DuckDBService:
         # 1. Fetch ticket_number
         row = self.connection.execute("SELECT ticket_number FROM email_extractions WHERE gmail_id = ?", [gmail_id]).fetchone()
         
+        if not row:
+            return False, f"Email with ID {gmail_id} not found"
+            
+        ticket_number = row[0]
+        
         # ✅ FIX: Handle missing ticket number by generating one
-        if not row or not row[0]:
+        if not ticket_number:
             logger.info(f"Ticket number missing for {gmail_id}. Generating new one...")
             ticket_number = self._generate_next_ticket_number()
             self.connection.execute("UPDATE email_extractions SET ticket_number = ? WHERE gmail_id = ?", [ticket_number, gmail_id])
-            self.connection.commit()
-        else:
-            ticket_number = row[0]
 
         # 2. Global Sequential PO Reference ID (PO-YYYY-MM-XXX)
         reference_id = self._generate_next_id("PO", "cpo_orders", "reference_id")
@@ -751,8 +756,8 @@ class DuckDBService:
         # 3. Insert into cpo_orders table
         # ✅ FIX: Use file_name, file_url
         self.connection.execute("""
-            INSERT INTO cpo_orders (ticket_number, reference_id, file_name, file_url, amount, uploaded_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO cpo_orders (id, ticket_number, reference_id, file_name, file_url, amount, uploaded_at)
+            VALUES (nextval('id_sequence'), ?, ?, ?, ?, ?, ?)
         """, [ticket_number, reference_id, file_metadata.get('name'), file_metadata.get('url'), file_metadata.get('amount'), get_uae_time()])
         
         # 4. Update Status and Timestamp on Main Ticket
@@ -761,10 +766,10 @@ class DuckDBService:
             [get_uae_time(), gmail_id]
         )
         self.connection.commit()
-        return True
+        return True, "Success"
       except Exception as e:
         logger.error(f"Error adding CPO file: {e}")
-        return False
+        return False, str(e)
     def add_internal_note(self, gmail_id, note_data):
         try:
             row = self.connection.execute("SELECT internal_notes FROM email_extractions WHERE gmail_id = ?", [gmail_id]).fetchone()

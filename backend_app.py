@@ -741,15 +741,13 @@ def create_flask_app():
                 "name": filename,
                 "url": file_url,      # Cloudinary URL
                 "amount": amount,
-                "url": file_url,      # Cloudinary URL
-                "amount": amount,
                 "uploaded_at": get_uae_time().isoformat()
             }
 
             # Save Metadata to DuckDB
             db = DuckDBService()
             if db.connect():
-                success = db.add_quotation_file(gmail_id, file_data)
+                success, error_msg = db.add_quotation_file(gmail_id, file_data)
                 if success:
                     # ✅ Log Activity
                     try:
@@ -773,9 +771,12 @@ def create_flask_app():
 
                     db.disconnect() # 👈 Disconnect AFTER logging
                     return jsonify({'success': True, 'file': file_data})
+                
+                # If we are here, success is False
+                db.disconnect()
+                return jsonify({'error': f"Database save failed: {error_msg}"}), 500
             
-            db.disconnect()
-            return jsonify({'error': 'Database save failed'}), 500
+            return jsonify({'error': 'Database connection failed'}), 500
             
         except Exception as e:
             # logger.error(f"Upload error: {e}")
@@ -813,14 +814,12 @@ def create_flask_app():
             "url": file_url,
             "po_number": po_number,
             "amount": amount,
-            "po_number": po_number,
-            "amount": amount,
             "uploaded_at": get_uae_time().isoformat()
         }
 
         db = DuckDBService()
         if db.connect():
-            success = db.add_cpo_file(gmail_id, file_data)
+            success, error_msg = db.add_cpo_file(gmail_id, file_data)
             if success:
                 # ✅ Log Activity
                 try:
@@ -844,9 +843,11 @@ def create_flask_app():
 
                 db.disconnect() # 👈 Disconnect AFTER logging
                 return jsonify({'success': True, 'file': file_data})
+            
+            db.disconnect()
+            return jsonify({'error': f"Database save failed: {error_msg}"}), 500
         
-        db.disconnect()
-        return jsonify({'error': 'Database save failed'}), 500
+        return jsonify({'error': 'Database connection failed'}), 500
         
        except Exception as e:
         return jsonify({'error': str(e)}), 500    
