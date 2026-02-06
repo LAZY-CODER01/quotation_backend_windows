@@ -665,7 +665,8 @@ def create_flask_app():
             subject = data.get('subject')
             sender_name = data.get('sender_name')
             sender_email = data.get('sender_email')
-            received_at = data.get('received_at')
+            company_name = data.get('company_name') # New field
+            received_at = data.get('received_at') # Expecting ISO format string
 
             if not gmail_id:
                 return jsonify({'error': 'gmail_id is required'}), 400
@@ -696,28 +697,33 @@ def create_flask_app():
             if sender_name or sender_email:
                 # If only one is provided, try to parse the other from existing, or use defaults
                 # Basic parsing of existing:
-                try:
-                    if '<' in current_sender_str:
-                        parts = current_sender_str.split('<')
-                        existing_name = parts[0].strip()
-                        existing_email = parts[1].replace('>', '').strip()
-                    else:
+                    try:
+                        if '<' in current_sender_str:
+                            parts = current_sender_str.split('<')
+                            existing_name = parts[0].strip()
+                            existing_email = parts[1].replace('>', '').strip()
+                        else:
+                            existing_name = current_sender_str
+                            existing_email = current_sender_str if '@' in current_sender_str else ''
+                    except:
                         existing_name = current_sender_str
-                        existing_email = current_sender_str if '@' in current_sender_str else ''
-                except:
-                    existing_name = current_sender_str
-                    existing_email = ''
+                        existing_email = ''
 
-                final_name = sender_name if sender_name is not None else existing_name
-                final_email = sender_email if sender_email is not None else existing_email
+                    final_name = sender_name if sender_name is not None else existing_name
+                    final_email = sender_email if sender_email is not None else existing_email
                 
-                new_sender_str = f"{final_name} <{final_email}>" if final_email else final_name
+                    new_sender_str = f"{final_name} <{final_email}>" if final_email else final_name
                 
-                if new_sender_str != current_sender_str:
-                    updates['sender'] = new_sender_str
-                    logs.append(f"Sender info updated")
+                    if new_sender_str != current_sender_str:
+                      updates['sender'] = new_sender_str
+                      logs.append(f"Sender info updated")
 
-            # 3. Handle Date
+            # 3. Handle Company Name
+            if company_name and company_name != existing.get('company_name'):
+                updates['company_name'] = company_name
+                logs.append(f"Company name updated to '{company_name}'")
+
+            # 4. Handle Date
             if received_at and received_at != existing.get('received_at'):
                 updates['received_at'] = received_at
                 logs.append(f"Received date changed to {received_at}")

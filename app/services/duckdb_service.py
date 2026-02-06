@@ -95,6 +95,7 @@ class DuckDBService:
                     activity_logs JSON DEFAULT '[]',
                     quotation_amount VARCHAR,
                     sender VARCHAR,
+                    company_name VARCHAR, -- 👈 Added company_name
                     received_at TIMESTAMP,
                     subject VARCHAR,
                     body_text TEXT,
@@ -141,7 +142,9 @@ class DuckDBService:
             self.connection.execute("CREATE TABLE IF NOT EXISTS company_tokens (id INTEGER PRIMARY KEY, token_json TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
             
             # Helper to ensure columns exist (in case we didn't drop tables above)
+            
             self._ensure_column_exists("users", "employee_code", "VARCHAR")
+            self._ensure_column_exists("email_extractions", "company_name", "VARCHAR")
 
             logger.info("✅ Database tables initialized (Emails, Tokens, Users, Quotations, CPO)")
             return True
@@ -298,9 +301,9 @@ class DuckDBService:
             # ✅ Added quotation_files and quotation_amount to the list
             cols = """
                 id, gmail_id, ticket_number, ticket_status, ticket_priority, 
-                quotation_files,cpo_files, quotation_amount,
-                sender, received_at, subject, body_text, internal_notes, activity_logs,
-                extraction_result, extraction_status, updated_at, created_at,assigned_to
+                quotation_files, cpo_files, quotation_amount,
+                sender, company_name, received_at, subject, body_text, internal_notes, activity_logs,
+                extraction_result, extraction_status, updated_at, created_at, assigned_to
             """
             
             query = f"SELECT {cols} FROM email_extractions WHERE 1=1"
@@ -374,8 +377,16 @@ class DuckDBService:
                             SELECT id, file_name, file_url, amount, uploaded_at, reference_id 
                             FROM quotations WHERE ticket_number = ?
                         """, [ticket_number]).fetchall()
+                        
                         item['quotation_files'] = [
-                            {'id': q[0], 'name': q[1], 'url': q[2], 'amount': q[3], 'uploaded_at': q[4].isoformat() if q[4] else None, 'reference_id': q[5]}
+                            {
+                                'id': q[0], 
+                                'name': q[1], 
+                                'url': q[2], 
+                                'amount': q[3], 
+                                'uploaded_at': q[4].isoformat() if q[4] else None, 
+                                'reference_id': q[5]
+                            }
                             for q in q_files
                         ]
 
@@ -384,18 +395,26 @@ class DuckDBService:
                             SELECT id, file_name, file_url, amount, uploaded_at, reference_id 
                             FROM cpo_orders WHERE ticket_number = ?
                         """, [ticket_number]).fetchall()
+                        
                         item['cpo_files'] = [
-                            {'id': c[0], 'name': c[1], 'url': c[2], 'amount': c[3], 'uploaded_at': c[4].isoformat() if c[4] else None, 'reference_id': c[5]}
+                            {
+                                'id': c[0], 
+                                'name': c[1], 
+                                'url': c[2], 
+                                'amount': c[3], 
+                                'uploaded_at': c[4].isoformat() if c[4] else None, 
+                                'reference_id': c[5]
+                            }
                             for c in c_files
                         ]
                     else:
                         item['quotation_files'] = []
                         item['cpo_files'] = []
                 except Exception as e:
-                     # ✅ FIX: Log specific error but don't crash
-                     logger.warning(f"Failed to fetch linked files for {ticket_number}: {e}")
-                     item['quotation_files'] = []
-                     item['cpo_files'] = []
+                    # ✅ FIX: Log specific error but don't crash
+                    logger.warning(f"Failed to fetch linked files for {ticket_number}: {e}")
+                    item['quotation_files'] = []
+                    item['cpo_files'] = []
 
                 extractions.append(item)
             return extractions
@@ -409,9 +428,10 @@ class DuckDBService:
             cols = """
                 id, gmail_id, ticket_number, ticket_status, ticket_priority, 
                 quotation_files, quotation_amount,
-                sender, received_at, subject, body_text, internal_notes, activity_logs,
+                sender, company_name, received_at, subject, body_text, internal_notes, activity_logs,
                 extraction_result, extraction_status, updated_at, created_at,assigned_to
             """
+
 
             result = self.connection.execute(
                 f"SELECT {cols} FROM email_extractions WHERE gmail_id = ?", 
@@ -735,41 +755,41 @@ class DuckDBService:
             logger.error(f"Error updating file amount: {e}")
             return False    
     def add_cpo_file(self, gmail_id, file_metadata):
-      try:
-        # 1. Fetch ticket_number
-        row = self.connection.execute("SELECT ticket_number FROM email_extractions WHERE gmail_id = ?", [gmail_id]).fetchone()
-        
-        if not row:
-            return False, f"Email with ID {gmail_id} not found"
+        try:
+            # 1. Fetch ticket_number
+            row = self.connection.execute("SELECT ticket_number FROM email_extractions WHERE gmail_id = ?", [gmail_id]).fetchone()
             
-        ticket_number = row[0]
-        
-        # ✅ FIX: Handle missing ticket number by generating one
-        if not ticket_number:
-            logger.info(f"Ticket number missing for {gmail_id}. Generating new one...")
-            ticket_number = self._generate_next_ticket_number()
-            self.connection.execute("UPDATE email_extractions SET ticket_number = ? WHERE gmail_id = ?", [ticket_number, gmail_id])
+            if not row:
+                return False, f"Email with ID {gmail_id} not found"
+                
+            ticket_number = row[0]
+            
+            # ✅ FIX: Handle missing ticket number by generating one
+            if not ticket_number:
+                logger.info(f"Ticket number missing for {gmail_id}. Generating new one...")
+                ticket_number = self._generate_next_ticket_number()
+                self.connection.execute("UPDATE email_extractions SET ticket_number = ? WHERE gmail_id = ?", [ticket_number, gmail_id])
 
-        # 2. Global Sequential PO Reference ID (PO-YYYY-MM-XXX)
-        reference_id = self._generate_next_id("PO", "cpo_orders", "reference_id")
+            # 2. Global Sequential PO Reference ID (PO-YYYY-MM-XXX)
+            reference_id = self._generate_next_id("PO", "cpo_orders", "reference_id")
 
-        # 3. Insert into cpo_orders table
-        # ✅ FIX: Use file_name, file_url
-        self.connection.execute("""
-            INSERT INTO cpo_orders (id, ticket_number, reference_id, file_name, file_url, amount, uploaded_at)
-            VALUES (nextval('id_sequence'), ?, ?, ?, ?, ?, ?)
-        """, [ticket_number, reference_id, file_metadata.get('name'), file_metadata.get('url'), file_metadata.get('amount'), get_uae_time()])
-        
-        # 4. Update Status and Timestamp on Main Ticket
-        self.connection.execute(
-            "UPDATE email_extractions SET ticket_status = 'ORDER_CONFIRMED', updated_at = ? WHERE gmail_id = ?", 
-            [get_uae_time(), gmail_id]
-        )
-        self.connection.commit()
-        return True, "Success"
-      except Exception as e:
-        logger.error(f"Error adding CPO file: {e}")
-        return False, str(e)
+            # 3. Insert into cpo_orders table
+            # ✅ FIX: Use file_name, file_url
+            self.connection.execute("""
+                INSERT INTO cpo_orders (id, ticket_number, reference_id, file_name, file_url, amount, uploaded_at)
+                VALUES (nextval('id_sequence'), ?, ?, ?, ?, ?, ?)
+            """, [ticket_number, reference_id, file_metadata.get('name'), file_metadata.get('url'), file_metadata.get('amount'), get_uae_time()])
+            
+            # 4. Update Status and Timestamp on Main Ticket
+            self.connection.execute(
+                "UPDATE email_extractions SET ticket_status = 'ORDER_CONFIRMED', updated_at = ? WHERE gmail_id = ?", 
+                [get_uae_time(), gmail_id]
+            )
+            self.connection.commit()
+            return True, "Success"
+        except Exception as e:
+            logger.error(f"Error adding CPO file: {e}")
+            return False, str(e)
     def add_internal_note(self, gmail_id, note_data):
         try:
             row = self.connection.execute("SELECT internal_notes FROM email_extractions WHERE gmail_id = ?", [gmail_id]).fetchone()
@@ -851,6 +871,10 @@ class DuckDBService:
                 fields.append("sender = ?")
                 values.append(updates['sender'])
                 
+            if 'company_name' in updates:
+                fields.append("company_name = ?")
+                values.append(updates['company_name'])
+
             if 'received_at' in updates:
                 fields.append("received_at = ?")
                 values.append(updates['received_at'])
