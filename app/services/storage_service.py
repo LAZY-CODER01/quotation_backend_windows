@@ -6,7 +6,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_EXTENSIONS = [".xlsx"]
+ALLOWED_EXTENSIONS = [".xlsx", ".pdf", ".doc", ".docx"]
 
 class StorageService:
     def __init__(self):
@@ -25,12 +25,12 @@ class StorageService:
         )
 
     # 📤 Upload XLSX only
-    def upload_excel(self, file_obj, filename, folder="excel_files"):
+    def upload_document(self, file_obj, filename, folder="documents"):
         try:
             ext = os.path.splitext(filename)[1].lower()
 
             if ext not in ALLOWED_EXTENSIONS:
-                raise ValueError("Only .xlsx files are allowed")
+                raise ValueError("Only Excel, PDF, and Word documents are allowed")
 
             response = cloudinary.uploader.upload(
                 file_obj,
@@ -41,13 +41,14 @@ class StorageService:
 
             return {
                 "url": response["secure_url"],
-                "public_id": response["public_id"]
+                "public_id": response["public_id"],
+                "format": response.get("format")
             }
 
         except Exception as e:
-            logger.exception("❌ Excel upload failed")
+            logger.exception("❌ Document upload failed")
             return None
-
+     
     # 🗑️ Delete file
     def delete_excel(self, public_id):
         try:

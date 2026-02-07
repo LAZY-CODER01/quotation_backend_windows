@@ -368,7 +368,7 @@ class ExcelGenerationService:
             disc_cell.alignment = left_center_align
 
             # THE FIX: Extend Blue Line to include template's contact bar images
-            FINAL_PRINT_ROW = DISCLAIMER_ROW + 15 
+            FINAL_PRINT_ROW = DISCLAIMER_ROW + 2 
             ws.print_area = f'A1:I{FINAL_PRINT_ROW}'
 
             # Force scaling to fit content

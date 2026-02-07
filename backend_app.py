@@ -352,6 +352,29 @@ def create_flask_app():
         except Exception as e:
             return jsonify({'error': str(e)}), 500
 
+    @app.route('/api/emails', methods=['POST'])
+    @jwt_required()
+    def create_ticket():
+        """Create a new ticket manually."""
+        try:
+            data = request.get_json()
+            required_fields = ['subject', 'company_name', 'sender_name', 'sender_email']
+            if not all(data.get(f) for f in required_fields):
+                return jsonify({'error': 'Missing required fields'}), 400
+            
+            db = DuckDBService()
+            if db.connect():
+                ticket_number = db.create_manual_ticket(data, request.user)
+                db.disconnect()
+                
+                if ticket_number:
+                    return jsonify({'success': True, 'ticket_number': ticket_number})
+                return jsonify({'error': 'Failed to create ticket'}), 500
+                
+            return jsonify({'error': 'Database connection failed'}), 500
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
     @app.route('/api/emails/stats', methods=['GET'])
     @jwt_required()
     def get_email_stats():

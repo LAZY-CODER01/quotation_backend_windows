@@ -270,6 +270,60 @@ class DuckDBService:
         except Exception as e:
             logger.error(f"Insert Error: {e}")
             return False
+
+    def create_manual_ticket(self, ticket_data, user):
+        """
+        Creates a new ticket manually (not from email).
+        """
+        try:
+            ticket_number = self._generate_next_ticket_number()
+            gmail_id = f"manual_{uuid.uuid4().hex}" # Generate pseudo-Gmail ID
+            
+            # Combine Sender Name and Email
+            sender_str = f"{ticket_data.get('sender_name')} <{ticket_data.get('sender_email')}>"
+            
+            # Default extraction result for manual tickets
+            # Summary is now just the subject since description is removed
+            extraction_result = {
+                "summary": ticket_data.get('subject', ''),
+                "priority": ticket_data.get('priority', 'NORMAL'),
+                "status": "VALID"
+            }
+            
+            query = """
+                INSERT INTO email_extractions (
+                    gmail_id, ticket_number, ticket_status, ticket_priority,
+                    sender, received_at, subject, body_text, 
+                    extraction_result, extraction_status, updated_at, assigned_to, created_at,
+                    quotation_files, cpo_files, activity_logs, internal_notes, company_name
+                ) VALUES (?, ?, 'INBOX', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', '[]', '[]', ?)
+            """
+            
+            self.connection.execute(query, [
+                gmail_id, 
+                ticket_number, 
+                ticket_data.get('priority', 'NORMAL'),
+                sender_str,
+                get_uae_time(),
+                ticket_data.get('subject'),
+                '', # Body text is empty as description is removed
+                json.dumps(extraction_result),
+                'VALID',
+                get_uae_time(),
+                user.get('username'), 
+                get_uae_time(),
+                ticket_data.get('company_name')
+            ])
+            
+            self.connection.commit()
+            
+            # Log Activity
+            self.add_activity_log(gmail_id, "TICKET_CREATED", "Ticket created manually", user.get('username'))
+            
+            return ticket_number
+        except Exception as e:
+            logger.error(f"Manual Ticket Creation Error: {e}")
+            return None
     def update_ticket_status(self, ticket_number, new_status):
         """Update workflow status (OPEN -> CLOSED)."""
         try:
