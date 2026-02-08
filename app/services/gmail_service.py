@@ -70,7 +70,8 @@ class GmailService:
             Optional[str]: Authorization URL or None if failed
         """
         SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 
-                  'https://www.googleapis.com/auth/gmail.modify']
+                  'https://www.googleapis.com/auth/gmail.modify',
+                  'https://www.googleapis.com/auth/drive.file']
         
         try:
             if not self.credentials_path or not os.path.exists(self.credentials_path):
@@ -109,7 +110,8 @@ class GmailService:
                 return False
 
             SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 
-                      'https://www.googleapis.com/auth/gmail.modify']
+                      'https://www.googleapis.com/auth/gmail.modify',
+                      'https://www.googleapis.com/auth/drive.file']
             
             # Always recreate the flow to ensure clean state
             flow = Flow.from_client_secrets_file(
@@ -149,7 +151,8 @@ class GmailService:
         Authenticate using token dictionary (from DB).
         """
         SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 
-                  'https://www.googleapis.com/auth/gmail.modify']
+                  'https://www.googleapis.com/auth/gmail.modify',
+                  'https://www.googleapis.com/auth/drive.file']
         
         try:
             creds = Credentials.from_authorized_user_info(token_info, SCOPES)
@@ -164,7 +167,10 @@ class GmailService:
                         db.save_company_token(creds.to_json())
                         db.disconnect()
                 except Exception as e:
-                    logger.error(f"Failed to refresh credentials: {str(e)}")
+                    if "invalid_scope" in str(e):
+                        logger.error("❌ SCOPE MISMATCH: The stored token is missing required permissions (likely Google Drive). Please RE-AUTHENTICATE in the Admin Panel.")
+                    else:
+                        logger.error(f"Failed to refresh credentials: {str(e)}")
                     return False
             
             if not creds or not creds.valid:

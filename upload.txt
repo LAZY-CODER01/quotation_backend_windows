@@ -1,0 +1,26 @@
+# 1. Commit
+git add .
+git commit -m "backend change"
+git push
+
+# 2. Build & push image
+TAG=$(date +%s)
+docker buildx build --platform linux/amd64 \
+  -t quotesnapacr.azurecr.io/quotesnap-backend:$TAG \
+  --push .
+
+# 3. Tell Azure to use it
+az webapp config container set \
+  --name quotesnap-api \
+  --resource-group quotesnap-rg \
+  --docker-custom-image-name quotesnapacr.azurecr.io/quotesnap-backend:$TAG
+
+# 4. Restart
+az webapp restart \
+  --name quotesnap-api \
+  --resource-group quotesnap-rg
+
+# 5. Watch logs
+az webapp log tail \
+  --name quotesnap-api \
+  --resource-group quotesnap-rg

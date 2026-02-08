@@ -10,8 +10,18 @@ print(f"🔄 Loading environment variables from .env file...")
 env_loaded = load_dotenv()
 print(f"📋 Environment loaded: {env_loaded}")
 
+def normalize_input(text: str) -> str:
+    """
+    Normalize OCR / email text for better extraction
+    """
+    text = text.replace("|", "\n")
+    text = text.replace(",", "\n")
+    text = re.sub(r"\n+", "\n", text)
+    return text.strip()
+
 
 def extract_json_from_response(response_text: str) -> dict:
+    
     """
     Extracts and parses JSON from various formats including:
     - Plain JSON
@@ -56,6 +66,8 @@ def extract_json_from_response(response_text: str) -> dict:
 
 
 def extract_hardware_quotation_details(email_content: str):
+        
+    normalized_text = normalize_input(email_content)
     """
     Single AI call that validates email and extracts quotation data if valid.
     Returns [IRRELEVANT] for non-quotation emails or JSON for valid requests.
@@ -80,9 +92,20 @@ def extract_hardware_quotation_details(email_content: str):
     prompt = f"""
 You are an intelligent email processor that handles quotation requests for hardware products, tools, and industrial equipment.
 
+The input text may come from:
+- Emails
+- Scanned PDFs (OCR output)
+- Images converted to text
+- WhatsApp-style messages
+- Poorly formatted or broken text
+- Comma-separated or line-separated item lists
+
+
 TASK: Analyze the email below and either:
 1. Return exactly {{"status": "IRRELEVANT"}} if it's NOT a quotation request
 2. Return a JSON object if it IS a valid quotation request
+
+
 
 WHAT MAKES AN EMAIL IRRELEVANT (return {{"status": "IRRELEVANT"}}):
 - Personal messages or casual conversations
@@ -101,6 +124,25 @@ WHAT MAKES AN EMAIL VALID (return JSON with quotation data):
 - Includes quantities, specifications, or requirements
 - Asking for product information with intent to purchase
 
+
+━━━━━━━━━━━━━━━━━━━━━━
+CRITICAL EXTRACTION RULES (VERY IMPORTANT)
+━━━━━━━━━━━━━━━━━━━━━━
+
+- EACH PRODUCT MUST BE A SEPARATE ITEM
+- Split items even if separated by:
+  - commas
+  - new lines
+  - OCR line breaks
+  - bullet points
+- NEVER merge multiple products into one Description
+- NEVER guess or hallucinate:
+  - quantity
+  - unit
+  - unit price
+- If any field is missing, return an empty string ""
+
+
 IF VALID, return this exact JSON structure:
 {{
   "status": "VALID",
@@ -118,11 +160,12 @@ IF VALID, return this exact JSON structure:
 }}
 
 EMAIL CONTENT:
-\"\"\"{email_content}\"\"\"
+\"\"\"{normalized_text}\"\"\"
 
 RESPONSE (MUST be valid JSON only, no additional text):"""
 
     # Make API call with JSON mode enabled for guaranteed JSON output
+  
     print(f"🔄 Making OpenAI API call with JSON mode...")
     try:
         response = client.chat.completions.create(
@@ -191,7 +234,18 @@ if __name__ == "__main__":
     Take a moment now to check your account activity and secure your account.
     © 2025 Google LLC, 1600 Amphitheatre Parkway, Mountain View, CA 94043, USA
     """
+   
+    sample_text = """
+    Masking Tape 2" Plastic Roll, Pencil,
+    Oil silicone Gulf 1200
+    National Silicone
+    Diamond Disc 4.5"
+    Hacksaw blade 12"
+    Garbage bag 25kg
+    """
 
+    result = extract_hardware_quotation_details(sample_text)
+    print(json.dumps(result, indent=2))
     print("=== Testing Valid Email (Single API Call) ===")
     valid_result = extract_hardware_quotation_details(valid_email)
     print(json.dumps(valid_result, indent=2))

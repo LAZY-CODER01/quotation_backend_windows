@@ -16,7 +16,7 @@ werkzeug
 tabulate
 pyjwt
 bcrypt
-cloudinary
+
 pytesseract
 pdf2image
 Pillow

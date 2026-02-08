@@ -902,7 +902,7 @@ class DuckDBService:
                 [json.dumps(logs), gmail_id]
             )
             self.connection.commit()
-            return True
+            return new_log
         except Exception as e:
             logger.error(f"Error adding log: {e}")
             return False
