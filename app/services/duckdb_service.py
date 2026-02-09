@@ -170,7 +170,7 @@ class DuckDBService:
         Generates the next ticket number in the format DBQ-YYYY-MM-XXX.
         Resets sequence for every new month.
         """
-        now = datetime.now()
+        now = get_uae_time()
         year = now.year
         month = f"{now.month:02d}"
         prefix = f"TKT-{year}-{month}-"
@@ -219,25 +219,26 @@ class DuckDBService:
             assigned_to_user = None
             body_text = email_data.get('body_text', '')
             if body_text:
-                # Regex to find EMP code safely
-                # \bEMP : Word boundary
+                # Regex to find EMP/DBSQ code safely
+                # \b(EMP|DBSQ) : Word boundary + Prefix (EMP or DBSQ)
                 # (?: ... | ... ) : Alternatives
-                # 1. [\s-]+([a-zA-Z0-9]+) : Separator + Alphanumeric ID (e.g. EMP-001, EMP 123)
-                # 2. (\d[a-zA-Z0-9]*)    : Digit + Alphanumeric ID (e.g. EMP001). Enforces attached IDs start with digit to avoid 'EMPloyee'
-                emp_pattern = r'(?i)\bEMP(?:[\s-]+([a-zA-Z0-9]+)|(\d[a-zA-Z0-9]*))' 
+                # 1. [\s-]*([a-zA-Z0-9]+) : Optional Separator + Alphanumeric ID (e.g. DBSQ001, DBSQ-001)
+                emp_pattern = r'(?i)\b(EMP|DBSQ)[\s-]*([a-zA-Z0-9]+)' 
                 match = re.search(emp_pattern, body_text)
                 
                 if match:
-                    # ID is in group 1 (if separated) or group 2 (if attached)
-                    emp_id_part = match.group(1) or match.group(2)
-                    full_emp_code = match.group(0)
+                    # Prefix is group 1
+                    prefix = match.group(1).upper()
+                    # ID is group 2
+                    emp_id_part = match.group(2)
+                    full_code_str = match.group(0)
                     
-                    # Search for the user using variations of the ID
+                    # Search for the user using variations of the ID with the found prefix
                     candidates = [
-                        full_emp_code,          # Literal match found
-                        f"EMP-{emp_id_part}",   # Standard hyphenated
-                        f"EMP{emp_id_part}",    # Compressed
-                        emp_id_part             # Just the ID
+                        full_code_str,          # Literal match found
+                        f"{prefix}{emp_id_part}",    # No hyphen (DBSQ001)
+                        f"{prefix}-{emp_id_part}",   # Standard hyphenated (DBSQ-001)
+                        emp_id_part             # Just the ID (Weakest match)
                     ]
                     
                     placeholders = ','.join(['?'] * len(candidates))
@@ -606,11 +607,36 @@ class DuckDBService:
             logger.error(f"Error getting user by username: {str(e)}")
             return None
 
+    def update_user_password(self, user_id, new_password):
+        try:
+            self.connection.execute("UPDATE users SET password_hash = ? WHERE id = ?", [new_password, user_id])
+            self.connection.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating password: {e}")
+            return False
+
+    def delete_user(self, user_id):
+        try:
+            # Also delete associated token
+            self.connection.execute("DELETE FROM user_tokens WHERE user_id = ?", [user_id])
+            self.connection.execute("DELETE FROM users WHERE id = ?", [user_id])
+            self.connection.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting user: {e}")
+            return False
+
     def create_user(self, username, password_hash, employee_code=None, role='user'):
         try:
             # Generate employee_code if not provided
             if not employee_code:
                 employee_code = self._generate_next_employee_code()
+            
+            # Ensure it starts with DBSQ- if manually entered (optional enforcement)
+            if employee_code and not employee_code.startswith('DBSQ-'):
+               # We can either enforce it or just let it be. Stick to autogen for consistency usually.
+               pass
 
             # Check if username or employee_code already exists
             check = self.connection.execute(
@@ -726,10 +752,10 @@ class DuckDBService:
 
     def _generate_next_employee_code(self):
         """
-        Generates the next employee code in the format EMP-XXX.
+        Generates the next employee code in the format DBSQXXX (No hyphen).
         """
         try:
-            prefix = "EMP-"
+            prefix = "DBSQ"
             # Find the highest employee code
             query = f"""
                 SELECT employee_code 
@@ -743,7 +769,10 @@ class DuckDBService:
             if result and result[0]:
                 last_code = result[0]
                 try:
-                    last_seq = int(last_code.split('-')[-1])
+                    # Remove prefix and parse int
+                    # Handle both legacy (hyphen) and new (no hyphen) if mixed
+                    code_part = last_code.replace(prefix, '').replace('-', '')
+                    last_seq = int(code_part)
                     new_seq = last_seq + 1
                 except ValueError:
                     new_seq = 1
@@ -753,7 +782,7 @@ class DuckDBService:
             return f"{prefix}{new_seq:03d}"
         except Exception as e:
             logger.error(f"Error generating employee code: {e}")
-            return f"EMP-{uuid.uuid4().hex[:4]}"
+            return f"DBSQ{uuid.uuid4().hex[:4]}"
 
     def add_quotation_file(self, gmail_id, file_metadata):
         """

@@ -2,6 +2,7 @@
 git add .
 git commit -m "backend change"
 git push
+az acr login --name quotesnapacr
 
 # 2. Build & push image
 TAG=$(date +%s)
@@ -13,7 +14,7 @@ docker buildx build --platform linux/amd64 \
 az webapp config container set \
   --name quotesnap-api \
   --resource-group quotesnap-rg \
-  --docker-custom-image-name quotesnapacr.azurecr.io/quotesnap-backend:$TAG
+  --docker-custom-image-name quotesnapacr.azurecr.io/quotesnap-backend:1770592147
 
 # 4. Restart
 az webapp restart \
