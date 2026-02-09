@@ -247,7 +247,7 @@ class DuckDBService:
                     
                     if user_res:
                         assigned_to_user = user_res[0]
-                        logger.info(f"🤖 Auto-assigned ticket {ticket_number} to {assigned_to_user} (Found EMP code: {full_emp_code})")
+                        logger.info(f"🤖 Auto-assigned ticket {ticket_number} to {assigned_to_user} (Found EMP code: {full_code_str})")
 
             query = """
                 INSERT INTO email_extractions (
