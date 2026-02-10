@@ -398,9 +398,9 @@ class DuckDBService:
                 query += " AND ticket_status = ?"
                 params.append(status_filter)
             
-            # ✅ RBAC: Users only see assigned or filtered tickets
+            # ✅ RBAC: Users only see assigned tickets (Unassigned tickets hidden)
             if user_role != 'ADMIN':
-                query += " AND (assigned_to = ? OR assigned_to IS NULL OR assigned_to = '')"
+                query += " AND assigned_to = ?"
                 params.append(username) # Current User
 
             query += " ORDER BY received_at DESC LIMIT ?"
@@ -607,6 +607,22 @@ class DuckDBService:
             logger.error(f"Error getting user by username: {str(e)}")
             return None
 
+    def get_user_by_id(self, user_id):
+        try:
+            q = "SELECT id, username, password_hash, role, employee_code FROM users WHERE id = ?"
+            row = self.connection.execute(q, [user_id]).fetchone()
+            if not row: return None
+            return {
+                "id": str(row[0]),
+                "username": row[1],
+                "password_hash": row[2],
+                "role": row[3],
+                "employee_code": row[4]
+            }
+        except Exception as e:
+            logger.error(f"Error getting user by ID: {str(e)}")
+            return None
+
     def update_user_password(self, user_id, new_password):
         try:
             self.connection.execute("UPDATE users SET password_hash = ? WHERE id = ?", [new_password, user_id])
@@ -614,6 +630,38 @@ class DuckDBService:
             return True
         except Exception as e:
             logger.error(f"Error updating password: {e}")
+            return False
+
+    def update_user_details(self, user_id, username=None, password=None, role=None, employee_code=None):
+        try:
+            # Build query dynamically
+            fields = []
+            params = []
+            
+            if username:
+                fields.append("username = ?")
+                params.append(username)
+            if password:
+                fields.append("password_hash = ?")
+                params.append(password)
+            if role:
+                fields.append("role = ?")
+                params.append(role)
+            if employee_code:
+                fields.append("employee_code = ?")
+                params.append(employee_code)
+                
+            if not fields:
+                return True # Nothing to update
+                
+            params.append(user_id)
+            query = f"UPDATE users SET {', '.join(fields)} WHERE id = ?"
+            
+            self.connection.execute(query, params)
+            self.connection.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating user details: {e}")
             return False
 
     def delete_user(self, user_id):

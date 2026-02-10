@@ -150,10 +150,27 @@ def create_flask_app():
     @jwt_required()
     def get_current_user():
         """Get current user info from token."""
-        return jsonify({
-            "success": True,
-            "user": request.user
-        })
+        try:
+            user_id = request.user.get('user_id')
+            if not user_id:
+                return jsonify({"error": "Invalid token payload"}), 401
+
+            db = DuckDBService()
+            if not db.connect():
+                return jsonify({"error": "Database connection failed"}), 500
+            
+            user = db.get_user_by_id(user_id)
+            db.disconnect()
+            
+            if user:
+                return jsonify({
+                    "success": True,
+                    "user": user
+                })
+            return jsonify({"error": "User not found"}), 404
+        except Exception as e:
+            logger.error(f"Error fetching current user: {e}")
+            return jsonify({"error": str(e)}), 500
 
     # -------------------------------------------------------------------------
     # ADMIN GMAIL ROUTES (Company Account)
@@ -348,6 +365,52 @@ def create_flask_app():
             
             db.disconnect()
             return jsonify({"error": "Failed to update password"}), 500
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/users/<user_id>', methods=['PUT'])
+    @jwt_required()
+    def update_user_details_route(user_id):
+        """
+        Update user details.
+        - Admin: Can update all fields.
+        - User: Can only update own username/password.
+        """
+        try:
+            data = request.get_json()
+            curr_user = request.user
+            
+            # Authorization Check
+            # Payload uses 'user_id' not 'id'
+            auth_user_id = str(curr_user.get('user_id'))
+            if curr_user.get('role') != 'ADMIN' and auth_user_id != str(user_id):
+                return jsonify({"error": "Unauthorized"}), 403
+
+            username = data.get('username')
+            password = data.get('password')
+            role = data.get('role')
+            employee_code = data.get('employee_code')
+
+            # Prevent non-admins from changing restricted fields
+            if curr_user.get('role') != 'ADMIN':
+                # Only role is strictly forbidden. 
+                # Employee code can be updated by self if needed (per user request).
+                if role:
+                    return jsonify({"error": "Unauthorized to change role"}), 403
+            
+            db = DuckDBService()
+            if not db.connect():
+                 return jsonify({"error": "Database connection failed"}), 500
+            
+            # Check if updating self username, if it's taken? DuckDB constraint handles unique, 
+            # but we might want to catch it gracefully.
+            
+            if db.update_user_details(user_id, username, password, role, employee_code):
+                db.disconnect()
+                return jsonify({"success": True, "message": "User updated successfully"})
+            
+            db.disconnect()
+            return jsonify({"error": "Failed to update user"}), 500
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
