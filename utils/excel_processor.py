@@ -10,12 +10,13 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def excel_to_markdown(excel_content: bytes) -> str:
+def excel_to_markdown(excel_content: bytes, filename: str = None) -> str:
     """
     Convert Excel content to markdown format.
     
     Args:
         excel_content (bytes): Excel file content as bytes
+        filename (str): Optional filename to help determine engine
         
     Returns:
         str: Excel content converted to markdown format
@@ -24,8 +25,29 @@ def excel_to_markdown(excel_content: bytes) -> str:
         # Create a BytesIO object from the Excel content
         excel_file = io.BytesIO(excel_content)
         
+        # Determine engine based on filename extension
+        engine = None
+        if filename:
+            if filename.lower().endswith('.xls'):
+                engine = 'xlrd'
+            elif filename.lower().endswith('.xlsx'):
+                engine = 'openpyxl'
+        
         # Read all sheets from the Excel file
-        excel_data = pd.read_excel(excel_file, sheet_name=None)
+        # If engine is not specified, pandas will try to infer, but often fails with BytesIO
+        # We default to openpyxl if it looks like xlsx or no info, but let pandas try first if engine is None
+        # Actually, the error says we MUST specify. 
+        if engine is None:
+             # Try to detect via bytes signature or just default to openpyxl as it's most common
+             engine = 'openpyxl' 
+
+        try:
+            excel_data = pd.read_excel(excel_file, sheet_name=None, engine=engine)
+        except Exception:
+            # Fallback to other engine if first failed
+            excel_file.seek(0)
+            other_engine = 'xlrd' if engine == 'openpyxl' else 'openpyxl'
+            excel_data = pd.read_excel(excel_file, sheet_name=None, engine=other_engine)
         
         markdown_content = []
         markdown_content.append("# Excel Document Content\n\n")

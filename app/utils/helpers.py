@@ -17,7 +17,10 @@ from datetime import datetime, date, timedelta, timezone
 def get_uae_time():
     """Returns current time in UAE timezone (UTC+4)."""
     # UAE is UTC+4
-    return datetime.now(timezone.utc) + timedelta(hours=4)
+    # Return naive datetime to prevent frontend from converting to local time
+    utc_now = datetime.now(timezone.utc)
+    uae_time = utc_now + timedelta(hours=4)
+    return uae_time.replace(tzinfo=None)
 
 logger = logging.getLogger(__name__)
 

@@ -1038,7 +1038,8 @@ def create_flask_app():
                 "id": str(uuid.uuid4()),
                 "text": text,
                 "author": request.user.get('username', 'Unknown'), # Get username from JWT
-                "created_at": datetime.now().isoformat()
+                # Store note timestamp in UAE time to keep frontend display consistent
+                "created_at": get_uae_time().isoformat()
             }
 
             db = DuckDBService()

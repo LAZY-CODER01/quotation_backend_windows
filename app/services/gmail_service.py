@@ -8,7 +8,7 @@ email monitoring, fetching, and authentication management.
 import logging
 from bs4 import BeautifulSoup
 from typing import List, Dict, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import threading
 import time
 import json
@@ -475,7 +475,7 @@ class GmailService:
                 'gmail_id': email_id,
                 'subject': headers.get('subject', ''),
                 'sender': headers.get('from', ''),
-                'received_at': datetime.fromtimestamp(int(message['internalDate'])/1000).isoformat(),
+                'received_at': (datetime.fromtimestamp(int(message['internalDate'])/1000, timezone.utc) + timedelta(hours=4)).replace(tzinfo=None).isoformat(),
                 'body_text': body_text,
                 'attachment_contents': attachment_contents,
                 'attachments': attachments

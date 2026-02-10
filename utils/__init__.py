@@ -26,7 +26,7 @@ def process_attachment(filename: str, content: bytes) -> str:
         if filename_lower.endswith('.pdf'):
             return pdf_to_markdown(content)
         elif filename_lower.endswith(('.xlsx', '.xls')):
-            return excel_to_markdown(content)
+            return excel_to_markdown(content, filename=filename)
         elif filename_lower.endswith(('.docx', '.doc')):
             return docx_to_markdown(content)
         elif filename_lower.endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp')):

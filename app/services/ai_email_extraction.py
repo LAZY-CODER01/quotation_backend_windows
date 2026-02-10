@@ -21,17 +21,15 @@ def normalize_input(text: str) -> str:
 
 
 def extract_json_from_response(response_text: str) -> dict:
+    # Clean up common AI "chatter" if not using JSON mode strictly
+    content = response_text.strip()
+    if content.startswith("```json"):
+        content = content.replace("```json", "", 1).rstrip("```")
+    elif content.startswith("```"):
+        content = content.replace("```", "", 1).rstrip("```")
     
-    """
-    Extracts and parses JSON from various formats including:
-    - Plain JSON
-    - Markdown code blocks (``````)
-    - Code blocks with language specifier (`````` only)
-    - Mixed text with JSON
-    """
-    # Try parsing directly first
     try:
-        return json.loads(response_text)
+        return json.loads(content.strip())
     except json.JSONDecodeError:
         pass
     
@@ -122,7 +120,9 @@ WHAT MAKES AN EMAIL VALID (return JSON with quotation data):
 - Mentions specific hardware products, tools, or equipment
 - Has business inquiry tone
 - Includes quantities, specifications, or requirements
-- Asking for product information with intent to purchase
+- Mentions specific hardware products, tools, or equipment (Even if it's just a list)
+- Asking for product information or simply listing items with intent to purchase/quote
+
 
 
 ━━━━━━━━━━━━━━━━━━━━━━
