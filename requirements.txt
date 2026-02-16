@@ -20,5 +20,7 @@ bcrypt
 pytesseract
 pdf2image
 Pillow
-flask-socketio
-eventlet
+flask-socketio>=5.3.6
+eventlet>=0.36.0
+pymongo
+sentence-transformers

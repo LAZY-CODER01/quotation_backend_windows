@@ -28,6 +28,7 @@ from app.utils.helpers import get_uae_time
 from werkzeug.utils import secure_filename
 from app.utils.file_parser import extract_text_from_file
 from app.services.ai_email_extraction import extract_price_from_content
+from app.services.semantic_search_service import SemanticSearchService
 
 
 
@@ -502,6 +503,29 @@ def create_flask_app():
                 'data': extractions
             })
         except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/search', methods=['GET'])
+    @jwt_required()
+    def semantic_search_route():
+        """
+        Perform semantic search for products/offers.
+        """
+        try:
+            query = request.args.get('q')
+            if not query:
+                return jsonify({'error': 'Missing query parameter'}), 400
+
+            search_service = SemanticSearchService()
+            results = search_service.search(query)
+            
+            return jsonify({
+                'success': True,
+                'count': len(results),
+                'results': results
+            })
+        except Exception as e:
+            logger.error(f"Search error: {e}")
             return jsonify({'error': str(e)}), 500
 
     @app.route('/api/emails', methods=['POST'])

@@ -1,8 +1,11 @@
 import os
 import logging
 import shutil
+import requests
+from io import BytesIO
 from datetime import datetime
 from typing import Dict, Optional
+from PIL import Image as PilImage
 
 # --- Import OpenPyXL (Works on Linux/Render) ---
 try:
@@ -10,6 +13,7 @@ try:
     from openpyxl.cell.rich_text import TextBlock, CellRichText
     from openpyxl.cell.text import InlineFont
     from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+    from openpyxl.drawing.image import Image as XLImage
 except ImportError:
     raise ImportError("CRITICAL: 'openpyxl' is missing. Add 'openpyxl>=3.1.0' to requirements.txt")
 
@@ -128,6 +132,9 @@ class ExcelGenerationService:
         light_green_fill = PatternFill(fill_type="solid", fgColor="E2EFDA") # Light Green for %
         light_blue_fill = PatternFill(fill_type="solid", fgColor="DDEBF7")  # Light Blue for Profit
         
+        # Set Column D Width to accommodate the image (approx 180px)
+        ws.column_dimensions['D'].width = 25
+        
         START_ROW = 12
         actual_rows = 0
 
@@ -136,13 +143,28 @@ class ExcelGenerationService:
             row = START_ROW + idx
             actual_rows += 1
             try:
+                # --- CHECK FOR SELECTED MATCH ---
+                selected_match = item.get("selectedMatch")
+                
+                # Default values from the raw extraction
+                desc_text = str(item.get("Description", "") or "N/A")
+                offering_text = str(item.get("Company Offering", "") or "")
+                brand_text = item.get("Brand and model", "")
+                price_val = self._to_float(item.get("Unit price", 0))
+                
+                # OVERRIDE if selected_match exists
+                if selected_match:
+                    if selected_match.get("offer"):
+                        offering_text = selected_match.get("offer")
+                    if selected_match.get("brand"):
+                        brand_text = selected_match.get("brand")
+                    if selected_match.get("price") is not None:
+                        price_val = self._to_float(selected_match.get("price"))
+                        
                 # Col 1: SL NO
                 ws.cell(row=row, column=1).value = idx + 1
 
                 # Col 2: DESCRIPTION (Rich Text)
-                desc_text = str(item.get("Description", "") or "N/A")
-                offering_text = str(item.get("Company Offering", "") or "")
-
                 header1 = TextBlock(InlineFont(b=True, u="single", color="800080"), "Your Requirement:\n")
                 body1 = TextBlock(InlineFont(color="000000"), f"{desc_text}\n\n")
                 header2 = TextBlock(InlineFont(b=True, u="single", color="FF0000"), "We OFFER:\n")
@@ -152,7 +174,47 @@ class ExcelGenerationService:
                 cell_desc.value = CellRichText([header1, body1, header2, body2])
 
                 # Col 3: BRAND
-                ws.cell(row=row, column=3).value = item.get("Brand and model", "")
+                ws.cell(row=row, column=3).value = brand_text
+                
+                # Col 4: IMAGE (NEW & CENTERED)
+                # Logic: Create a blank cell-sized canvas (180x180), resize product image to fit, paste in center.
+                if selected_match and selected_match.get("image_url"):
+                    image_url = selected_match.get("image_url")
+                    try:
+                        response = requests.get(image_url, timeout=5)
+                        if response.status_code == 200:
+                            # 1. Load Original Image
+                            img_data = BytesIO(response.content)
+                            pil_img = PilImage.open(img_data).convert("RGBA")
+                            
+                            # 2. Define Cell Canvas Size (Approx 180x180 pixels for 140pt height / 25 char width)
+                            # 140 points * 1.33 = ~186px
+                            # 25 chars * 7 = ~175px
+                            # We use 180x180 as a safe square that fits well.
+                            canvas_size = (180, 180)
+                            canvas = PilImage.new('RGBA', canvas_size, (255, 255, 255, 0)) # Transparent
+                            
+                            # 3. Resize Original Image to fit within Canvas (Thumbnail maintains aspect ratio)
+                            pil_img.thumbnail(canvas_size, PilImage.LANCZOS)
+                            
+                            # 4. Calculate Centered Position
+                            x = (canvas_size[0] - pil_img.width) // 2
+                            y = (canvas_size[1] - pil_img.height) // 2
+                            
+                            # 5. Paste (Use alpha channel as mask if available)
+                            canvas.paste(pil_img, (x, y), pil_img)
+                            
+                            # 6. Save Canvas to BytesIO for OpenPyXL
+                            final_img_data = BytesIO()
+                            canvas.save(final_img_data, format='PNG')
+                            final_img_data.seek(0)
+                            
+                            # 7. Add to Worksheet
+                            xl_img = XLImage(final_img_data)
+                            ws.add_image(xl_img, f'D{row}')
+                            
+                    except Exception as img_err:
+                        logger.error(f"Failed to load/center image for row {row}: {img_err}")
 
                 # Col 5: DELIVERY (RED BOLD)
                 cell_del = ws.cell(row=row, column=5, value="Ex stock, subject to prior sales.")
@@ -171,7 +233,6 @@ class ExcelGenerationService:
                 cell_unit.font = bold_font
 
                 # Col 8: UNIT PRICE (BOLD)
-                price_val = self._to_float(item.get("Unit price", 0))
                 cell_price = ws.cell(row=row, column=8)
                 cell_price.value = price_val 
                 cell_price.number_format = "#,##0.00"
