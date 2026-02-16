@@ -26,7 +26,7 @@ class Config:
     COMPANY_GMAIL_ID = 'demo.snapquote@gmail.com'
     
     # CORS Configuration
-    CORS_ORIGINS = os.environ.get('CORS_ORIGINS', 'http://localhost:3000,http://localhost:5173').split(',')
+    CORS_ORIGINS = os.environ.get('CORS_ORIGINS', 'http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000').split(',')
     FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
     
     # OAuth Redirect Configuration

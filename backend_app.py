@@ -292,6 +292,47 @@ def create_flask_app():
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
+    @app.route('/api/admin/employee-stats', methods=['GET', 'OPTIONS'])
+    @jwt_required(roles=['ADMIN'])
+    def get_employee_stats_route():
+        """Get aggregated performance stats for all employees."""
+        try:
+            db = DuckDBService()
+            if db.connect():
+                stats = db.get_employee_stats()
+                db.disconnect()
+                return jsonify({"success": True, "stats": stats})
+            return jsonify({"error": "Database connection failed"}), 500
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/admin/clients', methods=['GET', 'POST', 'OPTIONS'])
+    @jwt_required(roles=['ADMIN'])
+    def manage_clients():
+        """Get client stats or add a new client."""
+        if request.method == 'OPTIONS':
+             return jsonify({'status': 'ok'}), 200
+
+        try:
+            db = DuckDBService()
+            if db.connect():
+                if request.method == 'GET':
+                    stats = db.get_client_stats()
+                    db.disconnect()
+                    return jsonify({"success": True, "clients": stats})
+                
+                elif request.method == 'POST':
+                    data = request.get_json()
+                    result = db.add_client(data)
+                    db.disconnect()
+                    if result.get("success"):
+                        return jsonify(result)
+                    return jsonify(result), 400
+                    
+            return jsonify({"error": "Database connection failed"}), 500
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
     @app.route('/api/admin/users', methods=['POST'])
     @jwt_required(roles=['ADMIN'])
     def create_user():

@@ -141,6 +141,19 @@ class DuckDBService:
             self.connection.execute("CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), username VARCHAR UNIQUE, password_hash VARCHAR, employee_code VARCHAR UNIQUE, role VARCHAR DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
             self.connection.execute("CREATE TABLE IF NOT EXISTS company_tokens (id INTEGER PRIMARY KEY, token_json TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
             
+            # 5. Clients Table
+            self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS clients (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    name VARCHAR,
+                    business_name VARCHAR,
+                    email VARCHAR UNIQUE,
+                    phone VARCHAR,
+                    tags JSON DEFAULT '[]',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            
             # Helper to ensure columns exist (in case we didn't drop tables above)
             
             self._ensure_column_exists("users", "employee_code", "VARCHAR")
@@ -1085,3 +1098,237 @@ class DuckDBService:
         except Exception as e:
             logger.error(f"Error deleting CPO file: {e}")
             return False
+
+    def get_employee_stats(self):
+        """
+        Aggregates performance stats for all employees.
+        Returns a list of dicts with:
+        - employee: {name, email, avatar_initials}
+        - role
+        - active_tickets
+        - quotations_count
+        - orders_count
+        - avg_turnaround (hours)
+        """
+        try:
+            # 1. Get all users
+            users = self.get_all_users_full()
+            
+            # 2. Pre-fetch all tickets with necessary fields
+            # We need: ticket_number, assigned_to, ticket_status, created_at, activity_logs
+            tickets_query = """
+                SELECT ticket_number, assigned_to, ticket_status, created_at, activity_logs 
+                FROM email_extractions
+            """
+            all_tickets = self.connection.execute(tickets_query).fetchall()
+            
+            # 3. Pre-fetch counts for Quotations and Orders grouped by ticket_number
+            # Quotations
+            q_counts = self.connection.execute("SELECT ticket_number, COUNT(*) FROM quotations GROUP BY ticket_number").fetchall()
+            quotations_map = {row[0]: row[1] for row in q_counts}
+            
+            # Orders
+            o_counts = self.connection.execute("SELECT ticket_number, COUNT(*) FROM cpo_orders GROUP BY ticket_number").fetchall()
+            orders_map = {row[0]: row[1] for row in o_counts}
+
+            stats = []
+            
+            for user in users:
+                username = user.get('username')
+                # Filter tickets for this user
+                user_tickets = [t for t in all_tickets if t[1] == username]
+                
+                active_tickets = 0
+                total_quotations = 0
+                total_orders = 0
+                turnaround_times = []
+                
+                for t in user_tickets:
+                    ticket_number = t[0]
+                    status = t[2]
+                    created_at = t[3]
+                    activity_logs_json = t[4]
+                    
+                    # A. Active Tickets count
+                    if status != 'CLOSED':
+                        active_tickets += 1
+                        
+                    # B. Quotations & Orders count
+                    total_quotations += quotations_map.get(ticket_number, 0)
+                    total_orders += orders_map.get(ticket_number, 0)
+                    
+                    # C. Turnaround Time Calculation
+                    # Only for CLOSED or ORDER_COMPLETED tickets
+                    if status in ['CLOSED', 'ORDER_COMPLETED'] and created_at:
+                        completion_time = None
+                        
+                        try:
+                            logs = json.loads(activity_logs_json) if activity_logs_json else []
+                            if isinstance(logs, list):
+                                # Find the first log where status changed to CLOSED or ORDER_COMPLETED
+                                for log in logs:
+                                    if log.get('action') == 'STATUS_CHANGE' and \
+                                       any(s in log.get('description', '').upper() for s in ['CLOSED', 'ORDER_COMPLETED']):
+                                        # Parse timestamp
+                                        # Format in logs is isoformat: 2025-02-16T15:00:22+05:30
+                                        try:
+                                            completion_time = datetime.fromisoformat(log.get('timestamp'))
+                                            break
+                                        except:
+                                            pass
+                        except:
+                            pass
+                        
+                        # If no log found, maybe fallback to updated_at if available? 
+                        # For now, strict log check. If no log, we skip this ticket for avg calculation.
+                        
+                        if completion_time and created_at:
+                            # Calculate hours difference
+                            diff = completion_time - created_at
+                            hours = diff.total_seconds() / 3600
+                            if hours > 0:
+                                turnaround_times.append(hours)
+
+                # Avg Turnaround
+                avg_turnaround = 0.0
+                if turnaround_times:
+                    avg_turnaround = sum(turnaround_times) / len(turnaround_times)
+                
+                # Format for Frontend
+                # Name + Email extraction (mock email if not in DB, but DB has no email column for users yet?)
+                # Wait, users table has: id, username, password_hash, employee_code, role, created_at
+                # No email column. I will use placeholder or username@dbest.com
+                
+                stats.append({
+                    "id": user.get('id'),
+                    "employee": {
+                        "name": username,
+                        # Mock email for now as it doesn't exist in users table
+                        "email": f"{username.lower().replace(' ', '.')}@dbest.com", 
+                        "avatar": username[:2].upper() if username else "??"
+                    },
+                    "role": user.get('role'),
+                    "active_tickets": active_tickets,
+                    "quotations": total_quotations,
+                    "orders": total_orders,
+                    "avg_turnaround": round(avg_turnaround, 1)
+                })
+                
+            return stats
+        except Exception as e:
+            logger.error(f"Error calculating employee stats: {e}")
+            return []
+
+    # --- Client Management Methods ---
+
+    def add_client(self, client_data):
+        """
+        Adds a new client to the database.
+        """
+        try:
+            # Check if email already exists
+            existing = self.connection.execute("SELECT id FROM clients WHERE email = ?", [client_data.get('email')]).fetchone()
+            if existing:
+                return {"success": False, "error": "Client with this email already exists"}
+
+            query = """
+                INSERT INTO clients (name, business_name, email, phone, tags)
+                VALUES (?, ?, ?, ?, ?)
+                RETURNING id, name, email
+            """
+            tags_json = json.dumps(client_data.get('tags', []))
+            
+            # Using DuckDB's returning clause if supported, else fetch
+            self.connection.execute(query, [
+                client_data.get('name'),
+                client_data.get('business_name'),
+                client_data.get('email'),
+                client_data.get('phone'),
+                tags_json
+            ])
+            
+            # Fetch the inserted row (assuming RETURNING works or we select it back)
+            # DuckDB supports RETURNING via fetchone() on the result of execute()
+            # BUT python client might differ. Let's use specific fetch.
+            # actually DuckDB python API execute() returns a connection/cursor, so fetchone() works if RETURNING is valid.
+            # Safe bet: Select back by email
+            result = self.connection.execute("SELECT id, name, email FROM clients WHERE email = ?", [client_data.get('email')]).fetchone()
+            
+            return {
+                "success": True, 
+                "client": {
+                    "id": str(result[0]),
+                    "name": result[1],
+                    "email": result[2]
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error adding client: {e}")
+            return {"success": False, "error": str(e)}
+
+    def get_client_stats(self):
+        """
+        Aggregates stats for all clients.
+        Correlates with email_extractions via sender email (or domain matching in future).
+        """
+        try:
+            # 1. Fetch all clients
+            clients_res = self.connection.execute("SELECT id, name, business_name, email, phone, tags, created_at FROM clients ORDER BY created_at DESC").fetchall()
+            
+            clients_stats = []
+            
+            for row in clients_res:
+                client_id, name, business, email, phone, tags_json, created_at = row
+                
+                try:
+                    tags = json.loads(tags_json) if tags_json else []
+                except:
+                    tags = []
+
+                # 2. Get stats from email_extractions matching this client's email
+                # We assume sender email matches client email for simplicity now
+                
+                stats_query = """
+                    SELECT 
+                        COUNT(*),
+                        COUNT(CASE WHEN quotation_files != '[]' THEN 1 END),
+                        COUNT(CASE WHEN cpo_files != '[]' THEN 1 END),
+                        MAX(created_at)
+                    FROM email_extractions 
+                    WHERE sender ILIKE ?
+                """
+                # Use %email% to match "Name <email>" format
+                email_pattern = f"%{email}%"
+                
+                stats = self.connection.execute(stats_query, [email_pattern]).fetchone()
+                
+                total_tickets = stats[0] or 0
+                quotations = stats[1] or 0
+                orders = stats[2] or 0
+                last_active = stats[3]
+                
+                # Format Since date
+                since_date = created_at.strftime("%b %Y") if created_at else "N/A"
+
+                clients_stats.append({
+                    "id": str(client_id),
+                    "name": name,
+                    "company": business,
+                    "contact": {
+                        "email": email,
+                        "phone": phone
+                    },
+                    "tags": tags,
+                    "stats": {
+                        "quotations": quotations,
+                        "orders": orders
+                    },
+                    "since": since_date,
+                    "last_active": last_active.isoformat() if last_active else None
+                })
+
+            return clients_stats
+
+        except Exception as e:
+            logger.error(f"Error fetching client stats: {e}")
+            return []

@@ -13,6 +13,9 @@ def jwt_required(roles=None):
     def decorator(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
+            if request.method == "OPTIONS":
+                return jsonify({'status': 'ok'}), 200
+
             auth = request.headers.get("Authorization")
 
             if not auth or not auth.startswith("Bearer "):
