@@ -143,10 +143,22 @@ CRITICAL EXTRACTION RULES (VERY IMPORTANT)
 - If any field is missing, return an empty string ""
 
 
+METADATA EXTRACTION PRIORITY:
+- **Company Name**: 
+  - 1. Look in the signature block (Best source).
+  - 2. Look for text from logos or headers.
+  - 3. Infer from sender's email domain (e.g. from @dbest.com -> Dbest).
+  - 4. Default to "Unknown/Individual" if absolutely no trace found.
+- **Sender Name**:
+  - 1. Extract from "From:" header (e.g. "Ahmed Hassan" <...>)
+  - 2. Look for sign-off (e.g. "Regards, Ahmed").
+  - 3. Return "" if not found.
+
 IF VALID, return this exact JSON structure:
 {{
   "status": "VALID",
-  "to": "Name of person or company requesting quotation (empty string if not found)",
+  "sender_name": "Name of the sender (e.g. John Doe)",
+  "company_name": "Name of the company (e.g. ACME Corp)",
   "email": "Email address of requester (empty string if not found)", 
   "mobile": "Phone number of requester (empty string if not found)",
   "Requirements": [

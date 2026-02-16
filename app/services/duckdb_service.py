@@ -262,22 +262,32 @@ class DuckDBService:
                         assigned_to_user = user_res[0]
                         logger.info(f"🤖 Auto-assigned ticket {ticket_number} to {assigned_to_user} (Found EMP code: {full_code_str})")
 
+            # Extract metadata from AI result
+            extracted_company = extraction_result.get('company_name', '')
+            extracted_sender = extraction_result.get('sender_name', '')
+            
+            # Use extracted sender name if available, otherwise fallback to email data
+            final_sender = extracted_sender if extracted_sender else email_data.get('sender', '')
+
             query = """
                 INSERT INTO email_extractions (
                     gmail_id, ticket_number, ticket_status, ticket_priority,
                     sender, received_at, subject, body_text, 
-                    extraction_result, extraction_status, updated_at, assigned_to, created_at
-                ) VALUES (?, ?, 'INBOX', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    extraction_result, extraction_status, updated_at, assigned_to, created_at,
+                    company_name
+                ) VALUES (?, ?, 'INBOX', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (gmail_id) DO UPDATE SET
                     extraction_result = EXCLUDED.extraction_result,
                     extraction_status = EXCLUDED.extraction_status,
-                    updated_at = EXCLUDED.updated_at
+                    updated_at = EXCLUDED.updated_at,
+                    company_name = COALESCE(EXCLUDED.company_name, email_extractions.company_name)
             """
             self.connection.execute(query, [
                 email_data.get('gmail_id'), ticket_number, priority,
-                email_data.get('sender', ''), email_data.get('received_at'),
+                final_sender, email_data.get('received_at'),
                 email_data.get('subject', ''), body_text,
-                extraction_result_json, status, get_uae_time(), assigned_to_user, get_uae_time()
+                extraction_result_json, status, get_uae_time(), assigned_to_user, get_uae_time(),
+                extracted_company
             ])
             self.connection.commit()
             return True
