@@ -26,6 +26,8 @@ from app.services.storage_service import StorageService
 from app.utils.helpers import get_uae_time
 
 from werkzeug.utils import secure_filename
+from app.utils.file_parser import extract_text_from_file
+from app.services.ai_email_extraction import extract_price_from_content
 
 
 
@@ -984,6 +986,33 @@ def create_flask_app():
             gmail_id = request.form.get('gmail_id')
             amount = request.form.get('amount', '')
             
+            # --- Auto-Extraction Logic if amount is empty ---
+            extracted_amount = 0.0
+            if not amount or amount == '0' or amount == 'undefined': 
+                try:
+                   # Save temporarily to parse
+                   temp_path = f"/tmp/{secure_filename(file.filename)}"
+                   file.save(temp_path)
+                   
+                   # Parse & Extract
+                   text_content = extract_text_from_file(temp_path)
+                   if text_content:
+                       extraction = extract_price_from_content(text_content)
+                       extracted_amount = extraction.get('amount', 0.0)
+                       logger.info(f"🤖 Extracted Amount: {extracted_amount} from {file.filename}")
+                   
+                   # Reset file pointer for upload
+                   file.seek(0) 
+                   # Clean up
+                   os.remove(temp_path)
+                   
+                   if extracted_amount > 0:
+                       amount = str(extracted_amount)
+
+                except Exception as ext_err:
+                   logger.error(f"Auto-extraction failed: {ext_err}")
+                   file.seek(0) # Ensure reset even on error
+            
             if file.filename == '' or not gmail_id:
                 return jsonify({'error': 'No selected file or Ticket ID'}), 400
 
@@ -1065,6 +1094,33 @@ def create_flask_app():
         gmail_id = request.form.get('gmail_id')
         po_number = request.form.get('po_number', '')
         amount = request.form.get('amount', '0') # 👈 Capture Amount
+
+        # --- Auto-Extraction Logic if amount is empty ---
+        extracted_amount = 0.0
+        if not amount or amount == '0' or amount == 'undefined': 
+            try:
+               # Save temporarily to parse
+               temp_path = f"/tmp/cpo_{secure_filename(file.filename)}"
+               file.save(temp_path)
+               
+               # Parse & Extract
+               text_content = extract_text_from_file(temp_path)
+               if text_content:
+                   extraction = extract_price_from_content(text_content)
+                   extracted_amount = extraction.get('amount', 0.0)
+                   logger.info(f"🤖 Extracted CPO Amount: {extracted_amount} from {file.filename}")
+               
+               # Reset file pointer for upload
+               file.seek(0) 
+               # Clean up
+               os.remove(temp_path)
+               
+               if extracted_amount > 0:
+                   amount = str(extracted_amount)
+
+            except Exception as ext_err:
+               logger.error(f"Auto-extraction failed: {ext_err}")
+               file.seek(0) # Ensure reset even on error
 
         if file.filename == '' or not gmail_id:
             return jsonify({'error': 'No selected file or Ticket ID'}), 400

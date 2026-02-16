@@ -265,3 +265,65 @@ if __name__ == "__main__":
     print("\n=== Testing Invalid Email (Single API Call) ===")
     invalid_result = extract_hardware_quotation_details(invalid_email)
     print(json.dumps(invalid_result, indent=2))
+
+
+def extract_price_from_content(content: str) -> dict:
+    """
+    Extract total price/amount from document content using AI.
+    Returns JSON with amount and currency.
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return {"amount": 0.0, "currency": ""}
+
+    client = OpenAI(api_key=api_key)
+    
+    # Clean content to reduce token usage
+    content = normalize_input(content)[:10000] # Limit context window if huge
+
+    prompt = f"""
+    Analyze the following document content (Quotation or PO) and extract the GRAND TOTAL AMOUNT.
+    
+    Look for keywords:
+    - Grand Total
+    - Total Amount
+    - PO Total
+    - Final Amount
+    - Net Total containing VAT
+
+    Return as JSON:
+    {{
+      "amount": number (float, 0.0 if not found),
+      "currency": string (e.g. AED, USD),
+      "confidence": float (0.0 to 1.0)
+    }}
+
+    CONTENT:
+    \"\"\"{content}\"\"\"
+    """
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a data extraction assistant. Output valid JSON only."},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0
+        )
+        
+        result_text = response.choices[0].message.content.strip()
+        data = json.loads(result_text)
+        
+        # Ensure correct types
+        amount = float(str(data.get("amount", 0)).replace(",", ""))
+        return {
+            "amount": amount,
+            "currency": data.get("currency", "AED"),
+            "confidence": data.get("confidence", 0.0)
+        }
+
+    except Exception as e:
+        print(f"Price extraction failed: {e}")
+        return {"amount": 0.0, "currency": ""}
