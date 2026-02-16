@@ -757,9 +757,9 @@ def create_flask_app():
             
             if user_role != 'ADMIN':
                 # Standard User Restrictions
-                if new_status not in ['COMPLETION_REQUESTED']:
+                if new_status not in ['COMPLETION_REQUESTED', 'CLOSURE_REQUESTED']:
                     db.disconnect()
-                    return jsonify({'error': 'Unauthorized: Only Admins can close/complete tickets.'}), 403
+                    return jsonify({'error': 'Unauthorized: Only Admins can set other statuses.'}), 403
             
             # 3. Update Status
             success = db.update_ticket_status(ticket_number, new_status)
