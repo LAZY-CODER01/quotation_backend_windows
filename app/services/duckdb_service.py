@@ -290,6 +290,10 @@ class DuckDBService:
                 extracted_company
             ])
             self.connection.commit()
+
+            # Auto-add company as client from AI extraction if not already present
+            self.ensure_client_from_extraction(email_data, extraction_result)
+
             return True
         except Exception as e:
             logger.error(f"Insert Error: {e}")
@@ -1230,6 +1234,53 @@ class DuckDBService:
             return []
 
     # --- Client Management Methods ---
+
+    def ensure_client_from_extraction(self, email_data, extraction_result):
+        """
+        If the ticket was created from AI extraction, add the company as a client
+        if not already present (matched by email). Uses extraction_result and email_data.
+        """
+        try:
+            # Email: prefer AI-extracted, else parse from sender header
+            email = (extraction_result.get('email') or '').strip()
+            if not email and email_data.get('sender'):
+                sender = email_data.get('sender', '')
+                if '<' in sender and '>' in sender:
+                    email = sender.split('<')[-1].split('>')[0].strip()
+                elif '@' in sender:
+                    email = sender.strip()
+            if not email or '@' not in email:
+                return
+
+            # Already exists?
+            existing = self.connection.execute(
+                "SELECT id FROM clients WHERE email = ?", [email]
+            ).fetchone()
+            if existing:
+                logger.info(f"Client already exists for email {email}, skipping add")
+                return
+
+            # Build client payload from extraction
+            company_name = (extraction_result.get('company_name') or '').strip()
+            sender_name = (extraction_result.get('sender_name') or '').strip()
+            if not sender_name and email_data.get('sender'):
+                sender = email_data.get('sender', '')
+                if '<' in sender:
+                    sender_name = sender.split('<')[0].strip().replace('"', '').strip()
+                else:
+                    sender_name = sender.split('@')[0] if '@' in sender else ''
+            phone = (extraction_result.get('mobile') or '').strip()
+
+            self.add_client({
+                'name': sender_name or email.split('@')[0],
+                'business_name': company_name or email.split('@')[1].split('.')[0].upper() if '@' in email else '',
+                'email': email,
+                'phone': phone,
+                'tags': []
+            })
+            logger.info(f"Auto-added client from extraction: {company_name or email}")
+        except Exception as e:
+            logger.warning(f"Could not auto-add client from extraction: {e}")
 
     def add_client(self, client_data):
         """
