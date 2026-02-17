@@ -11,7 +11,7 @@ import json
 from datetime import datetime
 import uuid
 from config.settings import Config
-from app.utils.helpers import get_uae_time
+from app.utils.helpers import get_uae_time, parse_date_string
 
 logger = logging.getLogger(__name__)
 
@@ -1113,7 +1113,7 @@ class DuckDBService:
             logger.error(f"Error deleting CPO file: {e}")
             return False
 
-    def get_employee_stats(self):
+    def get_employee_stats(self, time_range='all'):
         """
         Aggregates performance stats for all employees.
         Returns a list of dicts with:
@@ -1129,9 +1129,9 @@ class DuckDBService:
             users = self.get_all_users_full()
             
             # 2. Pre-fetch all tickets with necessary fields
-            # We need: ticket_number, assigned_to, ticket_status, created_at, activity_logs
+            # We need: ticket_number, assigned_to, ticket_status, created_at, activity_logs, received_at
             tickets_query = """
-                SELECT ticket_number, assigned_to, ticket_status, created_at, activity_logs 
+                SELECT ticket_number, assigned_to, ticket_status, created_at, activity_logs, received_at 
                 FROM email_extractions
             """
             all_tickets = self.connection.execute(tickets_query).fetchall()
@@ -1145,33 +1145,101 @@ class DuckDBService:
             o_counts = self.connection.execute("SELECT ticket_number, COUNT(*) FROM cpo_orders GROUP BY ticket_number").fetchall()
             orders_map = {row[0]: row[1] for row in o_counts}
 
+            # --- Date Filtering Setup ---
+            start_date = None
+            now = get_uae_time()
+            
+            if time_range == '24h':
+                start_date = now - timedelta(hours=24)
+            elif time_range == '7d':
+                start_date = now - timedelta(days=7)
+            elif time_range == '30d':
+                start_date = now - timedelta(days=30)
+            # 'all' implies no start_date filter
+
             stats = []
             
             for user in users:
                 username = user.get('username')
-                # Filter tickets for this user
-                user_tickets = [t for t in all_tickets if t[1] == username]
                 
-                active_tickets = 0
-                total_quotations = 0
-                total_orders = 0
+                # Filter tickets for this user AND time range
+                user_tickets = []
+                for t in all_tickets:
+                    if t[1] != username:
+                        continue
+                        
+                    # Time range check
+                    created_at = t[3]
+                    received_at = t[5]
+                    
+                    check_date = created_at
+                    if received_at:
+                        if isinstance(received_at, datetime):
+                            check_date = received_at
+                        else:
+                            parsed_received = parse_date_string(received_at)
+                            if parsed_received:
+                                check_date = parsed_received
+                    
+                    if start_date and check_date:
+                        # Ensure offset-aware/naive compatibility if needed
+                         # (Assuming start_date and check_date are compatible or comparable)
+                        try:
+                            if check_date < start_date:
+                                continue
+                        except TypeError:
+                            # Fallback if mixed offsets: convert both to timestamp or ignore tz
+                            # Simplest: make check_date naive if start_date is naive
+                            if start_date.tzinfo is None and check_date.tzinfo is not None:
+                                check_date = check_date.replace(tzinfo=None)
+                            elif start_date.tzinfo is not None and check_date.tzinfo is None:
+                                check_date = check_date.replace(tzinfo=start_date.tzinfo)
+                            
+                            if check_date < start_date:
+                                continue
+                            
+                    user_tickets.append(t)
+                
+                inbox_count = 0
+                sent_count = 0
+                confirmed_count = 0
+                completed_count = 0
+                closed_count = 0
+
+                sent_count = 0
+                confirmed_count = 0
+                completed_count = 0
+                closed_count = 0
+                active_tickets = 0 # Re-added due to UnboundLocalError
+                
                 turnaround_times = []
                 
                 for t in user_tickets:
                     ticket_number = t[0]
-                    status = t[2]
+                    # Status normalization
+                    raw_status = t[2] or 'INBOX'
+                    status = raw_status.upper()
+                    
                     created_at = t[3]
                     activity_logs_json = t[4]
                     
-                    # A. Active Tickets count
+                    # --- Status Counting ---
+                    if status in ['INBOX', 'OPEN']:
+                        inbox_count += 1
+                    elif status == 'SENT':
+                        sent_count += 1
+                    elif status == 'ORDER_CONFIRMED':
+                        confirmed_count += 1
+                    elif status == 'ORDER_COMPLETED':
+                        completed_count += 1
+                    elif status == 'CLOSED':
+                        closed_count += 1
+                    
+                    # --- Active Tickets (All except CLOSED) ---
                     if status != 'CLOSED':
                         active_tickets += 1
-                        
-                    # B. Quotations & Orders count
-                    total_quotations += quotations_map.get(ticket_number, 0)
-                    total_orders += orders_map.get(ticket_number, 0)
                     
-                    # C. Turnaround Time Calculation
+                    # --- Turnaround Time Calculation ---
                     # Only for CLOSED or ORDER_COMPLETED tickets
                     if status in ['CLOSED', 'ORDER_COMPLETED'] and created_at:
                         completion_time = None
@@ -1184,7 +1252,6 @@ class DuckDBService:
                                     if log.get('action') == 'STATUS_CHANGE' and \
                                        any(s in log.get('description', '').upper() for s in ['CLOSED', 'ORDER_COMPLETED']):
                                         # Parse timestamp
-                                        # Format in logs is isoformat: 2025-02-16T15:00:22+05:30
                                         try:
                                             completion_time = datetime.fromisoformat(log.get('timestamp'))
                                             break
@@ -1193,11 +1260,7 @@ class DuckDBService:
                         except:
                             pass
                         
-                        # If no log found, maybe fallback to updated_at if available? 
-                        # For now, strict log check. If no log, we skip this ticket for avg calculation.
-                        
                         if completion_time and created_at:
-                            # Calculate hours difference
                             diff = completion_time - created_at
                             hours = diff.total_seconds() / 3600
                             if hours > 0:
@@ -1208,23 +1271,22 @@ class DuckDBService:
                 if turnaround_times:
                     avg_turnaround = sum(turnaround_times) / len(turnaround_times)
                 
-                # Format for Frontend
-                # Name + Email extraction (mock email if not in DB, but DB has no email column for users yet?)
-                # Wait, users table has: id, username, password_hash, employee_code, role, created_at
-                # No email column. I will use placeholder or username@dbest.com
-                
                 stats.append({
                     "id": user.get('id'),
                     "employee": {
                         "name": username,
-                        # Mock email for now as it doesn't exist in users table
                         "email": f"{username.lower().replace(' ', '.')}@dbest.com", 
                         "avatar": username[:2].upper() if username else "??"
                     },
                     "role": user.get('role'),
-                    "active_tickets": active_tickets,
-                    "quotations": total_quotations,
-                    "orders": total_orders,
+                    "active_tickets": active_tickets, # Legacy field, can keep for now
+                    # New granular fields
+                    "inbox_count": inbox_count,
+                    "sent_count": sent_count,
+                    "confirmed_count": confirmed_count,
+                    "completed_count": completed_count,
+                    "closed_count": closed_count,
+                    
                     "avg_turnaround": round(avg_turnaround, 1)
                 })
                 
