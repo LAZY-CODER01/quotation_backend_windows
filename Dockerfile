@@ -25,7 +25,8 @@ ENV PYTHONUNBUFFERED=1
 # IMPORTANT: Azure provides PORT
 CMD ["sh", "-c", "gunicorn backend_app:app \
  --worker-class eventlet \
- --workers 2 \
+ --workers 5 \
+ --worker-connections 1000 \
  --bind 0.0.0.0:8000 \
- --timeout 1200"]
-
+ --keep-alive 5 \
+ --timeout 60"]

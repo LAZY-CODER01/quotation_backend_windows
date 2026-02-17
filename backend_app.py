@@ -28,6 +28,7 @@ from app.utils.helpers import get_uae_time
 from werkzeug.utils import secure_filename
 from app.utils.file_parser import extract_text_from_file
 from app.services.ai_email_extraction import extract_price_from_content
+from app.utils.quotation_parser import extract_grand_total
 from app.services.semantic_search_service import SemanticSearchService
 
 
@@ -1019,16 +1020,15 @@ def create_flask_app():
                    file.save(temp_path)
                    
                    # Parse & Extract
-                   text_content = extract_text_from_file(temp_path)
-                   if text_content:
-                       extraction = extract_price_from_content(text_content)
-                       extracted_amount = extraction.get('amount', 0.0)
-                       logger.info(f"🤖 Extracted Amount: {extracted_amount} from {file.filename}")
+                   extraction = extract_grand_total(temp_path)
+                   extracted_amount = extraction.get('amount', 0.0)
+                   logger.info(f"🤖 Extracted Amount: {extracted_amount} from {file.filename}")
                    
                    # Reset file pointer for upload
                    file.seek(0) 
                    # Clean up
-                   os.remove(temp_path)
+                   if os.path.exists(temp_path):
+                       os.remove(temp_path)
                    
                    if extracted_amount > 0:
                        amount = str(extracted_amount)
@@ -1128,16 +1128,15 @@ def create_flask_app():
                file.save(temp_path)
                
                # Parse & Extract
-               text_content = extract_text_from_file(temp_path)
-               if text_content:
-                   extraction = extract_price_from_content(text_content)
-                   extracted_amount = extraction.get('amount', 0.0)
-                   logger.info(f"🤖 Extracted CPO Amount: {extracted_amount} from {file.filename}")
+               extraction = extract_grand_total(temp_path)
+               extracted_amount = extraction.get('amount', 0.0)
+               logger.info(f"🤖 Extracted CPO Amount: {extracted_amount} from {file.filename}")
                
                # Reset file pointer for upload
                file.seek(0) 
                # Clean up
-               os.remove(temp_path)
+               if os.path.exists(temp_path):
+                   os.remove(temp_path)
                
                if extracted_amount > 0:
                    amount = str(extracted_amount)
