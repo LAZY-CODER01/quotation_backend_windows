@@ -20,6 +20,18 @@ def normalize_input(text: str) -> str:
     return text.strip()
 
 
+
+def contains_dbsq_code(text: str) -> bool:
+    """
+    Detect internal DBSQ codes like:
+    DBSQ1111
+    dbsq-2025
+    Dbsq_8877
+    """
+    pattern = r"\bdbsq[\s\-_]?\d+\b"
+    return re.search(pattern, text, re.IGNORECASE) is not None
+
+
 def extract_json_from_response(response_text: str) -> dict:
     # Clean up common AI "chatter" if not using JSON mode strictly
     content = response_text.strip()
@@ -66,6 +78,11 @@ def extract_json_from_response(response_text: str) -> dict:
 def extract_hardware_quotation_details(email_content: str):
         
     normalized_text = normalize_input(email_content)
+    
+    # Check for DBSQ priority code
+    is_priority = contains_dbsq_code(normalized_text)
+    if is_priority:
+        print(f"🚨 DBSQ Code Detected! Forcing VALID processing.")
     """
     Single AI call that validates email and extracts quotation data if valid.
     Returns [IRRELEVANT] for non-quotation emails or JSON for valid requests.
@@ -143,6 +160,9 @@ CRITICAL EXTRACTION RULES (VERY IMPORTANT)
 - If any field is missing, return an empty string ""
 
 
+
+
+
 METADATA EXTRACTION PRIORITY:
 - **Company Name**: 
   - 1. Look in the signature block (Best source).
@@ -176,6 +196,10 @@ EMAIL CONTENT:
 
 RESPONSE (MUST be valid JSON only, no additional text):"""
 
+    # Inject override rule into prompt if priority
+    if is_priority:
+        prompt = "IMPORTANT OVERRIDE RULE:\nIf the email contains a DBSQ code, NEVER return IRRELEVANT.\nAlways treat it as VALID and extract all useful tender/procurement items.\n\n" + prompt
+
     # Make API call with JSON mode enabled for guaranteed JSON output
   
     print(f"🔄 Making OpenAI API call with JSON mode...")
@@ -204,6 +228,16 @@ RESPONSE (MUST be valid JSON only, no additional text):"""
         
         # Check if email is irrelevant
         if parsed_data.get("status") == "IRRELEVANT":
+            if is_priority:
+                print(f"⚠️ AI returned IRRELEVANT but DBSQ code found. Overriding to VALID.")
+                return {
+                    "status": "VALID",
+                    "sender_name": "",
+                    "company_name": "",
+                    "email": "",
+                    "mobile": "",
+                    "Requirements": []
+                }
             return {"status": "NOT_VALID", "reason": "Email is not a quotation request"}
         
         return parsed_data
