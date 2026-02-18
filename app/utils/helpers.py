@@ -179,19 +179,36 @@ def parse_date_string(date_string: str) -> Optional[datetime]:
     
     # Common date formats to try
     formats = [
+        "%Y-%m-%dT%H:%M:%S.%fZ", # ISO with millis and Z
+        "%Y-%m-%dT%H:%M:%SZ",    # ISO with Z
+        "%Y-%m-%dT%H:%M:%S",     # ISO no Z
         "%Y-%m-%d",
         "%Y-%m-%d %H:%M:%S",
         "%m/%d/%Y",
         "%d/%m/%Y",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%dT%H:%M:%SZ",
         "%B %d, %Y",
         "%d %B %Y"
     ]
     
+    # Try ISO format directly first
+    try:
+        dt = datetime.fromisoformat(date_string.replace('Z', '+00:00'))
+        # If aware, convert to UAE (UTC+4) and make naive
+        if dt.tzinfo is not None:
+            uae_tz = timezone(timedelta(hours=4))
+            dt = dt.astimezone(uae_tz).replace(tzinfo=None)
+        return dt
+    except ValueError:
+        pass
+
     for fmt in formats:
         try:
-            return datetime.strptime(date_string.strip(), fmt)
+            dt = datetime.strptime(date_string.strip(), fmt)
+            # If the format implies UTC (like Z), handle conversion
+            if fmt.endswith('Z'):
+                 uae_tz = timezone(timedelta(hours=4))
+                 dt = dt.replace(tzinfo=timezone.utc).astimezone(uae_tz).replace(tzinfo=None)
+            return dt
         except ValueError:
             continue
     

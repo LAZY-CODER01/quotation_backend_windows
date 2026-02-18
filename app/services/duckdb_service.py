@@ -3,7 +3,7 @@ import duckdb
 import os
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import duckdb
 import os
 import logging
@@ -1113,7 +1113,7 @@ class DuckDBService:
             logger.error(f"Error deleting CPO file: {e}")
             return False
 
-    def get_employee_stats(self, time_range='all'):
+    def get_employee_stats(self, time_range='all', start_date_str=None, end_date_str=None):
         """
         Aggregates performance stats for all employees.
         Returns a list of dicts with:
@@ -1147,14 +1147,36 @@ class DuckDBService:
 
             # --- Date Filtering Setup ---
             start_date = None
+            end_date = None
             now = get_uae_time()
             
-            if time_range == '24h':
-                start_date = now - timedelta(hours=24)
-            elif time_range == '7d':
-                start_date = now - timedelta(days=7)
-            elif time_range == '30d':
-                start_date = now - timedelta(days=30)
+            # Prioritize custom range
+            if start_date_str and start_date_str.lower() != 'undefined':
+                start_date = parse_date_string(start_date_str)
+            
+            if end_date_str and end_date_str.lower() != 'undefined':
+                end_date = parse_date_string(end_date_str)
+                # If end date is provided, set it to end of that day
+                if end_date:
+                    end_date = end_date.replace(hour=23, minute=59, second=59)
+
+            # Fallback to presets if no custom start date
+            if not start_date and time_range != 'custom':
+                if time_range == '24h':
+                    start_date = now - timedelta(hours=24)
+                elif time_range == '7d':
+                    start_date = now - timedelta(days=7)
+                elif time_range == '30d':
+                    start_date = now - timedelta(days=30)
+            
+            # Ensure timezone awareness for comparison
+            if start_date and start_date.tzinfo is None:
+                if now.tzinfo:
+                    start_date = start_date.replace(tzinfo=now.tzinfo)
+
+            if end_date and end_date.tzinfo is None:
+                 if now.tzinfo:
+                    end_date = end_date.replace(tzinfo=now.tzinfo)
             # 'all' implies no start_date filter
 
             stats = []
@@ -1172,31 +1194,27 @@ class DuckDBService:
                     created_at = t[3]
                     received_at = t[5]
                     
-                    check_date = created_at
+                    check_date = None
                     if received_at:
                         if isinstance(received_at, datetime):
                             check_date = received_at
                         else:
-                            parsed_received = parse_date_string(received_at)
-                            if parsed_received:
-                                check_date = parsed_received
+                            check_date = parse_date_string(received_at)
                     
-                    if start_date and check_date:
-                        # Ensure offset-aware/naive compatibility if needed
-                         # (Assuming start_date and check_date are compatible or comparable)
-                        try:
-                            if check_date < start_date:
-                                continue
-                        except TypeError:
-                            # Fallback if mixed offsets: convert both to timestamp or ignore tz
-                            # Simplest: make check_date naive if start_date is naive
-                            if start_date.tzinfo is None and check_date.tzinfo is not None:
-                                check_date = check_date.replace(tzinfo=None)
-                            elif start_date.tzinfo is not None and check_date.tzinfo is None:
-                                check_date = check_date.replace(tzinfo=start_date.tzinfo)
-                            
-                            if check_date < start_date:
-                                continue
+                    if not check_date:
+                        check_date = created_at
+                    
+                    if check_date:
+                         # timezone fix for check_date
+                        if now.tzinfo and check_date.tzinfo is None:
+                             try:
+                                check_date = check_date.replace(tzinfo=now.tzinfo)
+                             except: pass
+
+                        if start_date and check_date < start_date:
+                            continue
+                        if end_date and check_date > end_date:
+                            continue
                             
                     user_tickets.append(t)
                 
@@ -1389,15 +1407,59 @@ class DuckDBService:
             logger.error(f"Error adding client: {e}")
             return {"success": False, "error": str(e)}
 
-    def get_client_stats(self):
+    def get_client_stats(self, time_range='all', start_date_str=None, end_date_str=None):
         """
-        Aggregates stats for all clients.
-        Correlates with email_extractions via sender email (or domain matching in future).
+        Aggregates stats for all clients with date filtering.
+        Correlates with email_extractions via sender email.
         """
         try:
             # 1. Fetch all clients
             clients_res = self.connection.execute("SELECT id, name, business_name, email, phone, tags, created_at FROM clients ORDER BY created_at DESC").fetchall()
             
+            # 2. Pre-fetch relevant tickets
+            # filtering happens in memory or via SQL. Let's do SQL for efficiency if possible, 
+            # but since we need to match fuzzy emails, maybe fetch all tickets and filter in python is safer for now 
+            # OR better: usage of LIKE in SQL.
+            
+            # Let's prepare the date filter for the SQL query to optimize
+            date_filter_sql = ""
+            params = []
+            
+            start_date = None
+            end_date = None
+            now = get_uae_time()
+
+            # Prioritize custom range
+            if start_date_str and start_date_str.lower() != 'undefined':
+                start_date = parse_date_string(start_date_str)
+            
+            if end_date_str and end_date_str.lower() != 'undefined':
+                end_date = parse_date_string(end_date_str)
+                if end_date:
+                    end_date = end_date.replace(hour=23, minute=59, second=59)
+
+            if not start_date and time_range != 'custom':
+                if time_range == '24h':
+                    start_date = now - timedelta(hours=24)
+                elif time_range == '7d':
+                    start_date = now - timedelta(days=7)
+                elif time_range == '30d':
+                    start_date = now - timedelta(days=30)
+
+            # Ensure timezone awareness
+            if start_date and start_date.tzinfo is None and now.tzinfo:
+                start_date = start_date.replace(tzinfo=now.tzinfo)
+            if end_date and end_date.tzinfo is None and now.tzinfo:
+                end_date = end_date.replace(tzinfo=now.tzinfo)
+
+            # Build SQL for date filtering
+            if start_date:
+                date_filter_sql += " AND received_at >= ?"
+                params.append(start_date)
+            if end_date:
+                date_filter_sql += " AND received_at <= ?"
+                params.append(end_date)
+                
             clients_stats = []
             
             for row in clients_res:
@@ -1408,27 +1470,43 @@ class DuckDBService:
                 except:
                     tags = []
 
-                # 2. Get stats from email_extractions matching this client's email
-                # We assume sender email matches client email for simplicity now
+                # Count tickets by status for this client
+                # Match logic: sender email contains client email OR company name matches
                 
-                stats_query = """
-                    SELECT 
-                        COUNT(*),
-                        COUNT(CASE WHEN quotation_files != '[]' THEN 1 END),
-                        COUNT(CASE WHEN cpo_files != '[]' THEN 1 END),
-                        MAX(created_at)
+                # Note: We are now filtering the tickets by date as well
+                
+                ticket_query = f"""
+                    SELECT ticket_status
                     FROM email_extractions 
-                    WHERE sender ILIKE ?
+                    WHERE (sender ILIKE ? OR (company_name IS NOT NULL AND company_name ILIKE ?)) {date_filter_sql}
                 """
-                # Use %email% to match "Name <email>" format
-                email_pattern = f"%{email}%"
                 
-                stats = self.connection.execute(stats_query, [email_pattern]).fetchone()
+                # Copy params for this iteration
+                # If business is empty, use a string that won't match to avoid false positives
+                business_match = business if business and len(business) > 1 else "IMPOSSIBLE_MATCH_STRING_XYZ"
                 
-                total_tickets = stats[0] or 0
-                quotations = stats[1] or 0
-                orders = stats[2] or 0
-                last_active = stats[3]
+                current_params = [f"%{email}%", business_match] + params
+                
+                tickets = self.connection.execute(ticket_query, current_params).fetchall()
+                
+                # DEBUG LOGGING
+                if len(tickets) > 0:
+                     logger.info(f"DEBUG: Found {len(tickets)} tickets for client {email}/{business}. Statuses: {[t[0] for t in tickets]}")
+                
+                sent_count = 0
+                confirmed_count = 0
+                completed_count = 0
+                
+                for t in tickets:
+                    # status is tuple (status,)
+                    status = (t[0] or 'INBOX').upper()
+                    
+                    if status == 'SENT':
+                        sent_count += 1
+                    elif status == 'ORDER_CONFIRMED':
+                        confirmed_count += 1
+                    elif status == 'ORDER_COMPLETED':
+                        completed_count += 1
                 
                 # Format Since date
                 since_date = created_at.strftime("%b %Y") if created_at else "N/A"
@@ -1443,11 +1521,11 @@ class DuckDBService:
                     },
                     "tags": tags,
                     "stats": {
-                        "quotations": quotations,
-                        "orders": orders
+                        "sent_count": sent_count,
+                        "confirmed_count": confirmed_count,
+                        "completed_count": completed_count
                     },
-                    "since": since_date,
-                    "last_active": last_active.isoformat() if last_active else None
+                    "since": since_date
                 })
 
             return clients_stats

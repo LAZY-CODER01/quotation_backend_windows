@@ -301,9 +301,13 @@ def create_flask_app():
     def get_employee_stats_route():
         """Get aggregated performance stats for all employees."""
         try:
+            time_range = request.args.get('range', 'all')
+            start_date = request.args.get('start_date')
+            end_date = request.args.get('end_date')
+
             db = DuckDBService()
             if db.connect():
-                stats = db.get_employee_stats()
+                stats = db.get_employee_stats(time_range, start_date, end_date)
                 db.disconnect()
                 return jsonify({"success": True, "stats": stats})
             return jsonify({"error": "Database connection failed"}), 500
@@ -321,7 +325,11 @@ def create_flask_app():
             db = DuckDBService()
             if db.connect():
                 if request.method == 'GET':
-                    stats = db.get_client_stats()
+                    time_range = request.args.get('range', 'all')
+                    start_date = request.args.get('start_date')
+                    end_date = request.args.get('end_date')
+                    
+                    stats = db.get_client_stats(time_range, start_date, end_date)
                     db.disconnect()
                     return jsonify({"success": True, "clients": stats})
                 
