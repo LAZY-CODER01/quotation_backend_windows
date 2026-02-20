@@ -41,18 +41,44 @@ company_gmail_service = None
 monitoring_thread = None
 monitoring_active = False
 monitoring_lock_file = None # Global to hold lock
-import fcntl # For file locking
+# Cross-platform file locking (fcntl is Linux/Mac only)
+import sys as _sys
+if _sys.platform == 'win32':
+    import msvcrt as _msvcrt
+    def _acquire_lock(f):
+        """Acquire an exclusive non-blocking lock on Windows."""
+        try:
+            f.seek(0)
+            _msvcrt.locking(f.fileno(), _msvcrt.LK_NBLCK, 1)
+        except OSError:
+            raise IOError("Lock already held")
+    def _release_lock(f):
+        """Release lock on Windows."""
+        try:
+            f.seek(0)
+            _msvcrt.locking(f.fileno(), _msvcrt.LK_UNLCK, 1)
+        except Exception:
+            pass
+else:
+    import fcntl as _fcntl
+    def _acquire_lock(f):
+        """Acquire an exclusive non-blocking lock on Unix."""
+        _fcntl.lockf(f, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+    def _release_lock(f):
+        """Release lock on Unix."""
+        _fcntl.lockf(f, _fcntl.LOCK_UN)
 
 logger = logging.getLogger(__name__)
 
 def start_company_gmail_monitoring():
     global monitoring_lock_file
     
-    # Try to acquire lock
+    # Try to acquire lock (cross-platform: works on Windows & Linux)
     try:
-        lock_path = "/tmp/quotesnap_monitor.lock"
+        # Use a local lock file — avoids /tmp which doesn't exist on Windows
+        lock_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quotesnap_monitor.lock")
         monitoring_lock_file = open(lock_path, 'w')
-        fcntl.lockf(monitoring_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _acquire_lock(monitoring_lock_file)
         print("🔒 Worker acquired monitoring lock. Proceeding to start monitoring...")
     except IOError:
         print("🔒 Monitoring lock held by another worker. Skipping startup.")

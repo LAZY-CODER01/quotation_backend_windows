@@ -1,42 +1,32 @@
 import os
-import logging
 import shutil
+import logging
+import pythoncom
 import requests
 from io import BytesIO
 from datetime import datetime
 from typing import Dict, Optional
 from PIL import Image as PilImage
+import win32com.client
+import threading
 
-# --- Import OpenPyXL (Works on Linux/Render) ---
-try:
-    from openpyxl import load_workbook
-    from openpyxl.cell.rich_text import TextBlock, CellRichText
-    from openpyxl.cell.text import InlineFont
-    from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
-    from openpyxl.drawing.image import Image as XLImage
-except ImportError:
-    raise ImportError("CRITICAL: 'openpyxl' is missing. Add 'openpyxl>=3.1.0' to requirements.txt")
-
+excel_lock = threading.Lock()
 logger = logging.getLogger(__name__)
 
 class ExcelGenerationService:
-    """
-    Service class for generating quotation Excel files.
-    Optimized for Linux/Render (Docker) environments.
-    """
 
     def __init__(
         self,
-        template_path: str = "sample/QuotationFormat.xlsx",
-        output_dir: str = "generated",
+        template_path: str = r"sample/QuotationFormat.xlsx",
+        output_dir: str = r"generated",
     ):
-        self.template_path = template_path
-        self.output_dir = output_dir
-
-        # Ensure output directory exists - safer cleanup for Docker to avoid "Device Busy"
-        if os.path.exists(output_dir):
-            for filename in os.listdir(output_dir):
-                file_path = os.path.join(output_dir, filename)
+        self.template_path = os.path.abspath(template_path)
+        self.output_dir = os.path.abspath(output_dir)
+        
+        # Ensure output directory exists - safer cleanup for Docker/Windows to avoid "Device Busy"
+        if os.path.exists(self.output_dir):
+            for filename in os.listdir(self.output_dir):
+                file_path = os.path.join(self.output_dir, filename)
                 try:
                     if os.path.isfile(file_path) or os.path.islink(file_path):
                         os.unlink(file_path)
@@ -44,101 +34,117 @@ class ExcelGenerationService:
                         shutil.rmtree(file_path)
                 except Exception as e:
                     logger.error(f"Failed to delete {file_path}. Reason: {e}")
-        
-        os.makedirs(output_dir, exist_ok=True)
+                    
+        os.makedirs(self.output_dir, exist_ok=True)
         logger.info(f"Excel Service initialized. Template: {template_path}")
 
     def generate_quotation_excel(
         self, gmail_id: str, extraction_data: Dict, copy_only: bool = False
     ) -> Optional[str]:
         """
-        Generate a quotation Excel file using OpenPyXL (Render Compatible).
+        Generate a quotation Excel file using win32com.
         """
-        try:
-            # 1. Validation
-            if not os.path.exists(self.template_path):
-                logger.error(f"❌ Template not found at: {self.template_path}")
-                return None
+        excel = None
+        wb = None
+        
+        # Thread isolation for Win32COM
+        with excel_lock:
+            try:
+                pythoncom.CoInitialize()
+            except Exception as e:
+                logger.warning(f"CoInitialize error: {e}")
 
-            # 2. Setup Filename
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"quotation_{gmail_id}_{timestamp}.xlsx"
-            output_path = os.path.join(self.output_dir, filename)
+            try:
+                if not os.path.exists(self.template_path):
+                    logger.error("Template not found.")
+                    return None
 
-            # 3. Copy Template
-            shutil.copy2(self.template_path, output_path)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"quotation_{gmail_id}_{timestamp}.xlsx"
+                output_path = os.path.join(self.output_dir, filename)
 
-            if copy_only:
+                shutil.copy2(self.template_path, output_path)
+
+                if copy_only:
+                    return output_path
+
+                extraction_result = extraction_data.get("extraction_result", {})
+
+                excel = win32com.client.DispatchEx("Excel.Application")
+                excel.Visible = False
+                excel.DisplayAlerts = False
+
+                wb = excel.Workbooks.Open(output_path)
+                ws = wb.Worksheets(1)
+
+                self._fill_data(ws, extraction_result, output_path)
+
+                wb.Save()
+                wb.Close(False)
+                excel.Quit()
+
                 return output_path
 
-            # 4. Fill Data
-            extraction_result = extraction_data.get("extraction_result", {})
-            
-            # Using OpenPyXL to edit the file
-            wb = load_workbook(output_path)
-            ws = wb.active
-            
-            self._fill_data(ws, extraction_result)
-            
-            wb.save(output_path)
-            wb.close()
-            
-            logger.info(f"✅ Excel generated successfully: {output_path}")
-            return output_path
+            except Exception as e:
+                logger.error(f"Excel Service Error: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return None
 
-        except Exception as e:
-            logger.error(f"Error generating Excel: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return None
+            finally:
+                if excel:
+                    try:
+                        excel.Quit()
+                    except:
+                        pass
 
-    def _fill_data(self, ws, extraction_result):
+                pythoncom.CoUninitialize()
+
+    def _fill_data(self, ws, extraction_result, output_path):
         """
-        Fills the Excel data with EXACT formatting, Borders, and Colors.
+        Fills the Excel data with EXACT formatting, Borders, Colors using win32com.
         """
         requirements = extraction_result.get("Requirements", [])
         
-        # --- STYLING CONSTANTS ---
-        # 1. Borders
-        thin_side = Side(border_style="thin", color="000000")
-        full_border = Border(top=thin_side, bottom=thin_side, left=thin_side, right=thin_side)
+        xlContinuous = 1
+        xlThin = 2
         
-        thick_side = Side(border_style="medium", color="000000")
-        thick_border = Border(top=thin_side, bottom=thin_side, left=thin_side, right=thin_side)
+        xlCenter = -4108
+        xlLeft = -4131
+        xlRight = -4152
+        xlTop = -4160
         
-        # 2. Alignments
-        center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
-        left_top_align = Alignment(horizontal='left', vertical='top', wrap_text=True)
-        right_align = Alignment(horizontal="right", vertical="center")
-        left_center_align = Alignment(horizontal="left", vertical="center")
+        xlEdgeLeft = 7
+        xlEdgeTop = 8
+        xlEdgeBottom = 9
+        xlEdgeRight = 10
         
-        # 3. Fonts
-        red_bold_font = Font(name='Calibri', size=11, color="FF0000", bold=True)
-        red_bold = Font(bold=True, color="FF0000", name="Calibri", size=12)
-        red_bold_big = Font(bold=True, color="FF0000", name="Calibri", size=13)
-        # --- NEW FONTS ---
-        red_bold_large = Font(bold=True, color="FF0000", name="Calibri", size=14)
-        red_bold_extra_large = Font(bold=True, color="FF0000", name="Calibri", size=16)
-        red_bold_note = Font(bold=True, color="FF0000", name="Calibri", size=11)
-        
-        bold_font = Font(bold=True, name='Calibri', size=11)
-        italic_small = Font(italic=True, size=9, name='Calibri')
-        
-        # 4. Fills
-        yellow_fill = PatternFill(fill_type="solid", fgColor="FFFF66")
-        grey_fill = PatternFill(fill_type="solid", fgColor="D9D9D9")
-        
-        # --- NEW FILLS FOR PROFIT/PERCENTAGE ---
-        light_green_fill = PatternFill(fill_type="solid", fgColor="E2EFDA") # Light Green for %
-        light_blue_fill = PatternFill(fill_type="solid", fgColor="DDEBF7")  # Light Blue for Profit
-        
-        # Set Column D Width to accommodate the image (approx 180px)
-        ws.column_dimensions['D'].width = 25
+        def rgb_to_ole(hex_color):
+            hex_color = hex_color.lstrip('#')
+            if len(hex_color) == 6:
+                r = int(hex_color[0:2], 16)
+                g = int(hex_color[2:4], 16)
+                b = int(hex_color[4:6], 16)
+                return r + (g * 256) + (b * 65536)
+            return 0
+
+        color_black = rgb_to_ole("000000")
+        color_red = rgb_to_ole("FF0000")
+        color_purple = rgb_to_ole("800080")
+        color_yellow_fill = rgb_to_ole("FFFF66")
+        color_grey_fill = rgb_to_ole("D9D9D9")
+        color_light_green = rgb_to_ole("E2EFDA")
+        color_light_blue = rgb_to_ole("DDEBF7")
+
+        ws.Columns("D:D").ColumnWidth = 25
         
         START_ROW = 12
         actual_rows = 0
 
-        # --- A. FILL DATA ROWS (Loop over ALL requirements) ---
+        tmp_img_dir = os.path.join(self.output_dir, "temp_images")
+        os.makedirs(tmp_img_dir, exist_ok=True)
+
+        # --- A. FILL DATA ROWS ---
         for idx, item in enumerate(requirements): 
             row = START_ROW + idx
             actual_rows += 1
@@ -146,13 +152,11 @@ class ExcelGenerationService:
                 # --- CHECK FOR SELECTED MATCH ---
                 selected_match = item.get("selectedMatch")
                 
-                # Default values from the raw extraction
                 desc_text = str(item.get("Description", "") or "N/A")
                 offering_text = str(item.get("Company Offering", "") or "")
                 brand_text = item.get("Brand and model", "")
                 price_val = self._to_float(item.get("Unit price", 0))
                 
-                # OVERRIDE if selected_match exists
                 if selected_match:
                     if selected_match.get("offer"):
                         offering_text = selected_match.get("offer")
@@ -162,126 +166,178 @@ class ExcelGenerationService:
                         price_val = self._to_float(selected_match.get("price"))
                         
                 # Col 1: SL NO
-                ws.cell(row=row, column=1).value = idx + 1
+                ws.Cells(row, 1).Value = idx + 1
 
                 # Col 2: DESCRIPTION (Rich Text)
-                header1 = TextBlock(InlineFont(b=True, u="single", color="800080"), "Your Requirement:\n")
-                body1 = TextBlock(InlineFont(color="000000"), f"{desc_text}\n\n")
-                header2 = TextBlock(InlineFont(b=True, u="single", color="FF0000"), "We OFFER:\n")
-                body2 = TextBlock(InlineFont(color="000000"), f"{offering_text}")
+                full_desc = f"Your Requirement:\n{desc_text}\n\nWe OFFER:\n{offering_text}"
+                cell_desc = ws.Cells(row, 2)
+                cell_desc.Value = full_desc
+                
+                p1_start = 1
+                p1_len = len("Your Requirement:\n")
+                
+                p2_start = p1_start + p1_len
+                p2_len = len(desc_text) + 2
+                
+                p3_start = p2_start + p2_len
+                p3_len = len("We OFFER:\n")
+                
+                p4_start = p3_start + p3_len
+                p4_len = len(offering_text)
+                
+                if p1_len > 0:
+                    c1 = cell_desc.Characters(p1_start, p1_len).Font
+                    c1.Bold = True
+                    c1.Underline = 2
+                    c1.Color = color_purple
 
-                cell_desc = ws.cell(row=row, column=2)
-                cell_desc.value = CellRichText([header1, body1, header2, body2])
+                if p2_len > 0:
+                    c2 = cell_desc.Characters(p2_start, p2_len).Font
+                    c2.Bold = False
+                    c2.Color = color_black
+
+                if p3_len > 0:
+                    c3 = cell_desc.Characters(p3_start, p3_len).Font
+                    c3.Bold = True
+                    c3.Underline = 2
+                    c3.Color = color_red
+
+                if p4_len > 0:
+                    c4 = cell_desc.Characters(p4_start, p4_len).Font
+                    c4.Bold = False
+                    c4.Color = color_black
 
                 # Col 3: BRAND
-                ws.cell(row=row, column=3).value = brand_text
+                ws.Cells(row, 3).Value = brand_text
                 
                 # Col 4: IMAGE (NEW & CENTERED)
-                # Logic: Create a blank cell-sized canvas (180x180), resize product image to fit, paste in center.
                 if selected_match and selected_match.get("image_url"):
                     image_url = selected_match.get("image_url")
                     try:
                         response = requests.get(image_url, timeout=5)
                         if response.status_code == 200:
-                            # 1. Load Original Image
                             img_data = BytesIO(response.content)
                             pil_img = PilImage.open(img_data).convert("RGBA")
                             
-                            # 2. Define Cell Canvas Size (Approx 180x180 pixels for 140pt height / 25 char width)
-                            # 140 points * 1.33 = ~186px
-                            # 25 chars * 7 = ~175px
-                            # We use 180x180 as a safe square that fits well.
                             canvas_size = (180, 180)
-                            canvas = PilImage.new('RGBA', canvas_size, (255, 255, 255, 0)) # Transparent
+                            canvas = PilImage.new('RGBA', canvas_size, (255, 255, 255, 0))
                             
-                            # 3. Resize Original Image to fit within Canvas (Thumbnail maintains aspect ratio)
                             pil_img.thumbnail(canvas_size, PilImage.LANCZOS)
                             
-                            # 4. Calculate Centered Position
                             x = (canvas_size[0] - pil_img.width) // 2
                             y = (canvas_size[1] - pil_img.height) // 2
                             
-                            # 5. Paste (Use alpha channel as mask if available)
                             canvas.paste(pil_img, (x, y), pil_img)
                             
-                            # 6. Save Canvas to BytesIO for OpenPyXL
-                            final_img_data = BytesIO()
-                            canvas.save(final_img_data, format='PNG')
-                            final_img_data.seek(0)
+                            if canvas.mode == "RGBA":
+                                bg = PilImage.new('RGB', canvas.size, (255, 255, 255))
+                                bg.paste(canvas, mask=canvas.split()[3])
+                                canvas = bg
+                                
+                            temp_img_path = os.path.join(tmp_img_dir, f"img_{row}_{idx}.png")
+                            canvas.save(temp_img_path, format='PNG')
                             
-                            # 7. Add to Worksheet
-                            xl_img = XLImage(final_img_data)
-                            ws.add_image(xl_img, f'D{row}')
+                            cell_img = ws.Cells(row, 4)
+                            pic_width = 135
+                            pic_height = 135
+                            pic_left = cell_img.Left + (cell_img.Width - pic_width) / 2
+                            pic_top = cell_img.Top + (cell_img.Height - pic_height) / 2
+                            
+                            ws.Shapes.AddPicture(temp_img_path, False, True, pic_left, pic_top, pic_width, pic_height)
                             
                     except Exception as img_err:
                         logger.error(f"Failed to load/center image for row {row}: {img_err}")
 
                 # Col 5: DELIVERY (RED BOLD)
-                cell_del = ws.cell(row=row, column=5, value="Ex stock, subject to prior sales.")
-                cell_del.font = red_bold_font
+                cell_del = ws.Cells(row, 5)
+                cell_del.Value = "Ex stock, subject to prior sales."
+                cell_del.Font.Name = "Calibri"
+                cell_del.Font.Size = 11
+                cell_del.Font.Color = color_red
+                cell_del.Font.Bold = True
 
                 # Col 6: QTY (BOLD)
                 qty_val = self._to_float(item.get("Quantity", 0))
-                cell_qty = ws.cell(row=row, column=6)
-                cell_qty.value = qty_val
-                cell_qty.number_format = "#,##0.00"
-                cell_qty.font = bold_font
+                cell_qty = ws.Cells(row, 6)
+                cell_qty.Value = qty_val
+                cell_qty.NumberFormat = "#,##0.00"
+                cell_qty.Font.Name = "Calibri"
+                cell_qty.Font.Size = 11
+                cell_qty.Font.Bold = True
 
                 # Col 7: UNIT (BOLD)
-                cell_unit = ws.cell(row=row, column=7)
-                cell_unit.value = item.get("Unit", "")
-                cell_unit.font = bold_font
+                cell_unit = ws.Cells(row, 7)
+                cell_unit.Value = item.get("Unit", "")
+                cell_unit.Font.Name = "Calibri"
+                cell_unit.Font.Size = 11
+                cell_unit.Font.Bold = True
 
                 # Col 8: UNIT PRICE (BOLD)
-                cell_price = ws.cell(row=row, column=8)
-                cell_price.value = price_val 
-                cell_price.number_format = "#,##0.00"
-                cell_price.font = bold_font
+                cell_price = ws.Cells(row, 8)
+                cell_price.Value = price_val 
+                cell_price.NumberFormat = "#,##0.00"
+                cell_price.Font.Name = "Calibri"
+                cell_price.Font.Size = 11
+                cell_price.Font.Bold = True
 
                 # Col 9: TOTAL PRICE FORMULA (BOLD)
-                cell_total = ws.cell(row=row, column=9)
-                cell_total.value = f"=F{row}*H{row}"
-                cell_total.number_format = "#,##0.00"
-                cell_total.font = bold_font
-                
+                cell_total = ws.Cells(row, 9)
+                cell_total.Formula = f"=F{row}*H{row}"
+                cell_total.NumberFormat = "#,##0.00"
+                cell_total.Font.Name = "Calibri"
+                cell_total.Font.Size = 11
+                cell_total.Font.Bold = True
+
                 # --- INTERNAL CALCULATIONS (CP/Profit) ---
                 
                 # Col K (11): CP Input (BOLD)
-                cell_cp = ws.cell(row=row, column=11)
-                cell_cp.value = 0.00
-                cell_cp.number_format = "#,##0.00"
-                cell_cp.font = bold_font
+                cell_cp = ws.Cells(row, 11)
+                cell_cp.Value = 0.00
+                cell_cp.NumberFormat = "#,##0.00"
+                cell_cp.Font.Name = "Calibri"
+                cell_cp.Font.Size = 11
+                cell_cp.Font.Bold = True
 
                 # Col L (12): % Input (Light Green Background)
-                cell_pct = ws.cell(row=row, column=12)
-                cell_pct.value = 0.00
-                cell_pct.number_format = "0.00%"
-                cell_pct.fill = light_green_fill
+                cell_pct = ws.Cells(row, 12)
+                cell_pct.Value = 0.00
+                cell_pct.NumberFormat = "0.00%"
+                cell_pct.Interior.Color = color_light_green
 
                 # Col M (13): Profit Formula (BOLD + Light Blue Background)
-                cell_profit = ws.cell(row=row, column=13)
-                cell_profit.value = f"=(N{row}-K{row})*F{row}"
-                cell_profit.number_format = "#,##0.00"
-                cell_profit.font = bold_font
-                cell_profit.fill = light_blue_fill
+                cell_profit = ws.Cells(row, 13)
+                cell_profit.Formula = f"=(N{row}-K{row})*F{row}"
+                cell_profit.NumberFormat = "#,##0.00"
+                cell_profit.Font.Name = "Calibri"
+                cell_profit.Font.Size = 11
+                cell_profit.Font.Bold = True
+                cell_profit.Interior.Color = color_light_blue
 
                 # Col N (14): SP Formula (BOLD)
-                cell_sp = ws.cell(row=row, column=14)
-                cell_sp.value = f"=K{row}*(1+L{row})"
-                cell_sp.number_format = "#,##0.00"
-                cell_sp.font = bold_font
+                cell_sp = ws.Cells(row, 14)
+                cell_sp.Formula = f"=K{row}*(1+L{row})"
+                cell_sp.NumberFormat = "#,##0.00"
+                cell_sp.Font.Name = "Calibri"
+                cell_sp.Font.Size = 11
+                cell_sp.Font.Bold = True
 
                 # --- APPLY BORDERS & ALIGNMENT ---
-                ws.row_dimensions[row].height = 140 
+                ws.Rows(row).RowHeight = 140 
                 
                 for col in range(1, 15):
-                    cell = ws.cell(row=row, column=col)
-                    cell.border = full_border 
+                    cell = ws.Cells(row, col)
+                    cell.Borders.LineStyle = xlContinuous
+                    cell.Borders.Weight = xlThin
+                    cell.Borders.Color = color_black
                     
                     if col == 2:
-                        cell.alignment = left_top_align
+                        cell.HorizontalAlignment = xlLeft
+                        cell.VerticalAlignment = xlTop
+                        cell.WrapText = True
                     else:
-                        cell.alignment = center_align
+                        cell.HorizontalAlignment = xlCenter
+                        cell.VerticalAlignment = xlCenter
+                        cell.WrapText = True
 
             except Exception as row_error:
                 logger.error(f"Error processing row {row}: {row_error}")
@@ -294,70 +350,111 @@ class ExcelGenerationService:
             TOTAL_ROW = last_data_row + 1
             VAT_ROW = TOTAL_ROW + 1
             GRAND_ROW = VAT_ROW + 1
-            NOTE_ROW = GRAND_ROW + 1  # Note row immediately follows Grand Total
+            NOTE_ROW = GRAND_ROW + 1
 
             # ---- TOTAL AMOUNT ----
-            ws.merge_cells(start_row=TOTAL_ROW, start_column=1, end_row=TOTAL_ROW, end_column=8)
-            ws.cell(row=TOTAL_ROW, column=1, value="Total Amount (AED).")
-            ws.cell(row=TOTAL_ROW, column=9, value=f"=SUM(I{START_ROW}:I{last_data_row})")
+            ws.Range(ws.Cells(TOTAL_ROW, 1), ws.Cells(TOTAL_ROW, 8)).Merge()
+            ws.Cells(TOTAL_ROW, 1).Value = "Total Amount (AED)."
+            ws.Cells(TOTAL_ROW, 9).Formula = f"=SUM(I{START_ROW}:I{last_data_row})"
             
             # ---- VAT ----
-            ws.merge_cells(start_row=VAT_ROW, start_column=1, end_row=VAT_ROW, end_column=8)
-            ws.cell(row=VAT_ROW, column=1, value="VAT 5% (AED).")
-            ws.cell(row=VAT_ROW, column=9, value=f"=I{TOTAL_ROW}*0.05")
+            ws.Range(ws.Cells(VAT_ROW, 1), ws.Cells(VAT_ROW, 8)).Merge()
+            ws.Cells(VAT_ROW, 1).Value = "VAT 5% (AED)."
+            ws.Cells(VAT_ROW, 9).Formula = f"=I{TOTAL_ROW}*0.05"
 
             # ---- GRAND TOTAL ----
-            ws.merge_cells(start_row=GRAND_ROW, start_column=1, end_row=GRAND_ROW, end_column=8)
-            ws.cell(row=GRAND_ROW, column=1, value="GRAND TOTAL AMOUNT (AED).")
-            ws.cell(row=GRAND_ROW, column=9, value=f"=SUM(I{TOTAL_ROW}:I{VAT_ROW})")
+            ws.Range(ws.Cells(GRAND_ROW, 1), ws.Cells(GRAND_ROW, 8)).Merge()
+            ws.Cells(GRAND_ROW, 1).Value = "GRAND TOTAL AMOUNT (AED)."
+            ws.Cells(GRAND_ROW, 9).Formula = f"=SUM(I{TOTAL_ROW}:I{VAT_ROW})"
 
             # ---- NOTE ROW ----
-            ws.merge_cells(start_row=NOTE_ROW, start_column=1, end_row=NOTE_ROW, end_column=9)
-            ws.cell(row=NOTE_ROW, column=1, value="NOTE :- STOCK AVAILBILITY AS PER THE QUOTATION DATE KINDLY CONFIRM AT THE TIME OF CONFIRMATION.")
+            ws.Range(ws.Cells(NOTE_ROW, 1), ws.Cells(NOTE_ROW, 9)).Merge()
+            ws.Cells(NOTE_ROW, 1).Value = "NOTE :- STOCK AVAILBILITY AS PER THE QUOTATION DATE KINDLY CONFIRM AT THE TIME OF CONFIRMATION."
             
             # ---- APPLY FORMATTING ----
             
             # 1. Total Amount & VAT (14pt Red Bold)
             for r in (TOTAL_ROW, VAT_ROW):
-                ws.row_dimensions[r].height = 20 # Increase height
-                ws.cell(row=r, column=1).font = red_bold_large
-                ws.cell(row=r, column=9).font = red_bold_large
-                ws.cell(row=r, column=1).alignment = right_align
-                ws.cell(row=r, column=9).alignment = center_align
-                ws.cell(row=r, column=9).number_format = "#,##0.00"
+                ws.Rows(r).RowHeight = 20 
+                
+                c1 = ws.Cells(r, 1)
+                c1.Font.Name = "Calibri"
+                c1.Font.Size = 14
+                c1.Font.Color = color_red
+                c1.Font.Bold = True
+                c1.HorizontalAlignment = xlRight
+                
+                c9 = ws.Cells(r, 9)
+                c9.Font.Name = "Calibri"
+                c9.Font.Size = 14
+                c9.Font.Color = color_red
+                c9.Font.Bold = True
+                c9.HorizontalAlignment = xlCenter
+                c9.NumberFormat = "#,##0.00"
+                
                 for c in range(1, 10):
-                    ws.cell(row=r, column=c).border = full_border # Full thin border
+                    cell = ws.Cells(r, c)
+                    cell.Borders.LineStyle = xlContinuous
+                    cell.Borders.Weight = xlThin
+                    cell.Borders.Color = color_black
 
             # 2. Grand Total (16pt Red Bold, Yellow Fill)
-            ws.row_dimensions[GRAND_ROW].height = 25 # Increase height
-            ws.cell(row=GRAND_ROW, column=1).font = red_bold_extra_large
-            ws.cell(row=GRAND_ROW, column=9).font = red_bold_extra_large
-            ws.cell(row=GRAND_ROW, column=1).alignment = right_align
-            ws.cell(row=GRAND_ROW, column=9).alignment = center_align
-            ws.cell(row=GRAND_ROW, column=9).number_format = "#,##0.00"
+            ws.Rows(GRAND_ROW).RowHeight = 25 
+            
+            c1_g = ws.Cells(GRAND_ROW, 1)
+            c1_g.Font.Name = "Calibri"
+            c1_g.Font.Size = 16
+            c1_g.Font.Color = color_red
+            c1_g.Font.Bold = True
+            c1_g.HorizontalAlignment = xlRight
+            
+            c9_g = ws.Cells(GRAND_ROW, 9)
+            c9_g.Font.Name = "Calibri"
+            c9_g.Font.Size = 16
+            c9_g.Font.Color = color_red
+            c9_g.Font.Bold = True
+            c9_g.HorizontalAlignment = xlCenter
+            c9_g.NumberFormat = "#,##0.00"
+            
             for c in range(1, 10):
-                cell = ws.cell(row=GRAND_ROW, column=c)
-                cell.fill = yellow_fill
-                cell.border = full_border # Full thin border
+                cell = ws.Cells(GRAND_ROW, c)
+                cell.Interior.Color = color_yellow_fill
+                cell.Borders.LineStyle = xlContinuous
+                cell.Borders.Weight = xlThin
+                cell.Borders.Color = color_black
 
             # 3. Note Row (Red Bold Note)
-
-            note_cell = ws.cell(row=NOTE_ROW, column=1)
-            note_cell.font = red_bold_note
-            note_cell.alignment = left_center_align
+            note_cell = ws.Cells(NOTE_ROW, 1)
+            note_cell.Font.Name = "Calibri"
+            note_cell.Font.Size = 11
+            note_cell.Font.Color = color_red
+            note_cell.Font.Bold = True
+            note_cell.HorizontalAlignment = xlLeft
+            note_cell.VerticalAlignment = xlCenter
+            
             for c in range(1, 10):
-                ws.cell(row=NOTE_ROW, column=c).border = full_border
+                cell = ws.Cells(NOTE_ROW, c)
+                cell.Borders.LineStyle = xlContinuous
+                cell.Borders.Weight = xlThin
+                cell.Borders.Color = color_black
 
             # --- TERMS & CONDITIONS ---
-            TERMS_ROW = NOTE_ROW + 1  # Start 2 rows after Note
+            TERMS_ROW = NOTE_ROW + 1 
 
-            ws.merge_cells(start_row=TERMS_ROW, start_column=1, end_row=TERMS_ROW, end_column=9)
-            t_cell = ws.cell(row=TERMS_ROW, column=1, value="TERMS:")
-            t_cell.font = bold_font
-            t_cell.fill = grey_fill
-            t_cell.alignment = left_center_align
+            ws.Range(ws.Cells(TERMS_ROW, 1), ws.Cells(TERMS_ROW, 9)).Merge()
+            t_cell = ws.Cells(TERMS_ROW, 1)
+            t_cell.Value = "TERMS:"
+            t_cell.Font.Name = "Calibri"
+            t_cell.Font.Size = 11
+            t_cell.Font.Bold = True
+            t_cell.Interior.Color = color_grey_fill
+            t_cell.HorizontalAlignment = xlLeft
+            
             for c in range(1, 10):
-                ws.cell(row=TERMS_ROW, column=c).border = full_border
+                cell = ws.Cells(TERMS_ROW, c)
+                cell.Borders.LineStyle = xlContinuous
+                cell.Borders.Weight = xlThin
+                cell.Borders.Color = color_black
 
             # ---- TERMS ROWS ----
             terms_data = [
@@ -367,27 +464,32 @@ class ExcelGenerationService:
                 ("Validity:", "15 days from offer date.")
             ]
 
-            # Fix: Track current_row for footer logic
             current_row = TERMS_ROW
             for i, (label, value) in enumerate(terms_data):
                 current_row = TERMS_ROW + 1 + i
-                ws.cell(row=current_row, column=1, value=label)
-                ws.cell(row=current_row, column=1).font = bold_font
-                ws.cell(row=current_row, column=1).alignment = left_center_align
-
-                ws.merge_cells(start_row=current_row, start_column=2, end_row=current_row, end_column=9)
-                ws.cell(row=current_row, column=2, value=value)
-                ws.cell(row=current_row, column=2).font = bold_font
-                ws.cell(row=current_row, column=2).alignment = left_center_align
-
+                
+                c_lbl = ws.Cells(current_row, 1)
+                c_lbl.Value = label
+                c_lbl.Font.Name = "Calibri"
+                c_lbl.Font.Size = 11
+                c_lbl.Font.Bold = True
+                c_lbl.HorizontalAlignment = xlLeft
+                
+                ws.Range(ws.Cells(current_row, 2), ws.Cells(current_row, 9)).Merge()
+                c_val = ws.Cells(current_row, 2)
+                c_val.Value = value
+                c_val.Font.Name = "Calibri"
+                c_val.Font.Size = 11
+                c_val.Font.Bold = True
+                c_val.HorizontalAlignment = xlLeft
+                
                 for c in range(1, 10):
-                    ws.cell(row=current_row, column=c).border = full_border
+                    cell = ws.Cells(current_row, c)
+                    cell.Borders.LineStyle = xlContinuous
+                    cell.Borders.Weight = xlThin
+                    cell.Borders.Color = color_black
 
             # --- FOOTER MESSAGES & DYNAMIC PRINT AREA ---
-            # --- FOOTER MESSAGES & DYNAMIC PRINT AREA ---
-            # Define rows for footer structure
-            # current_row (Terms End) -> Spacer (1) -> Msg -> Spacer (1) -> Regards -> Company -> Spacer (2) -> Disclaimer
-            
             FS_START = current_row + 1
             MSG_ROW = FS_START + 1
             REGARDS_ROW = MSG_ROW + 2
@@ -395,52 +497,63 @@ class ExcelGenerationService:
             DISCLAIMER_ROW = COMPANY_ROW + 3
             FS_END = DISCLAIMER_ROW
             
-            # Apply borders to the entire block (Outline only, no inner grid)
             for r in range(FS_START, FS_END + 1):
-                # Merge row first
-                ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=9)
+                row_range = ws.Range(ws.Cells(r, 1), ws.Cells(r, 9))
+                row_range.Merge()
                 
-                for c in range(1, 10):
-                    # Determine borders based on position
-                    b_left = thin_side if c == 1 else None
-                    b_right = thin_side if c == 9 else None
-                    b_bottom = thin_side if r == FS_END else None
-                    # Top border is handled by the row above (Terms), so None here to avoid double/inner lines
-                    
-                    cell_border = Border(left=b_left, right=b_right, top=None, bottom=b_bottom)
-                    ws.cell(row=r, column=c).border = cell_border
-            
+                row_range.Borders(xlEdgeLeft).LineStyle = xlContinuous
+                row_range.Borders(xlEdgeLeft).Weight = xlThin
+                row_range.Borders(xlEdgeRight).LineStyle = xlContinuous
+                row_range.Borders(xlEdgeRight).Weight = xlThin
+                
+                if r == FS_END:
+                    row_range.Borders(xlEdgeBottom).LineStyle = xlContinuous
+                    row_range.Borders(xlEdgeBottom).Weight = xlThin
+
             # 1. Message
-            ws.cell(row=MSG_ROW, column=1, value="Please revert for clarifications if any. Thank you for providing an opportunity to quote.")
-            ws.cell(row=MSG_ROW, column=1).alignment = left_center_align
+            msg_cell = ws.Cells(MSG_ROW, 1)
+            msg_cell.Value = "Please revert for clarifications if any. Thank you for providing an opportunity to quote."
+            msg_cell.HorizontalAlignment = xlLeft
             
             # 2. Best Regards
-            ws.cell(row=REGARDS_ROW, column=1, value="Best Regards,")
-            ws.cell(row=REGARDS_ROW, column=1).alignment = left_center_align
+            reg_cell = ws.Cells(REGARDS_ROW, 1)
+            reg_cell.Value = "Best Regards,"
+            reg_cell.HorizontalAlignment = xlLeft
             
             # 3. Company Name (Bold)
-            ws.cell(row=COMPANY_ROW, column=1, value="Dbest Building Hardware and Tools Trading LLC.")
-            ws.cell(row=COMPANY_ROW, column=1).font = bold_font
-            ws.cell(row=COMPANY_ROW, column=1).alignment = left_center_align
+            comp_cell = ws.Cells(COMPANY_ROW, 1)
+            comp_cell.Value = "Dbest Building Hardware and Tools Trading LLC."
+            comp_cell.Font.Name = "Calibri"
+            comp_cell.Font.Size = 11
+            comp_cell.Font.Bold = True
+            comp_cell.HorizontalAlignment = xlLeft
         
             # 4. Disclaimer
-            disc_cell = ws.cell(row=DISCLAIMER_ROW, column=1, value="(This message has been electronically transmitted and does not require a signature).")
-            disc_cell.font = italic_small
-            disc_cell.alignment = left_center_align
+            disc_cell = ws.Cells(DISCLAIMER_ROW, 1)
+            disc_cell.Value = "(This message has been electronically transmitted and does not require a signature)."
+            disc_cell.Font.Name = "Calibri"
+            disc_cell.Font.Size = 9
+            disc_cell.Font.Italic = True
+            disc_cell.HorizontalAlignment = xlLeft
 
             # THE FIX: Extend Blue Line to include template's contact bar images
             FINAL_PRINT_ROW = DISCLAIMER_ROW + 2 
-            ws.print_area = f'A1:I{FINAL_PRINT_ROW}'
+            ws.PageSetup.PrintArea = f"$A$1:$I${FINAL_PRINT_ROW}"
 
-            # Force scaling to fit content
-            ws.sheet_properties.pageSetUpPr.fitToPage = True
-            ws.page_setup.fitToWidth = 1
-            ws.page_setup.fitToHeight = 0 
+            ws.PageSetup.Zoom = False
+            ws.PageSetup.FitToPagesWide = 1
+            ws.PageSetup.FitToPagesTall = False
 
         except Exception as e:
             logger.error(f"Error writing totals/footer: {e}")
             import traceback
             logger.error(traceback.format_exc())
+            
+        finally:
+            try:
+                shutil.rmtree(tmp_img_dir, ignore_errors=True)
+            except:
+                pass
 
     def _to_float(self, value) -> float:
         try:
