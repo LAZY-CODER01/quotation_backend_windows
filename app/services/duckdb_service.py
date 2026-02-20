@@ -13,7 +13,12 @@ import uuid
 from config.settings import Config
 from app.utils.helpers import get_uae_time, parse_date_string
 
+import threading
+
 logger = logging.getLogger(__name__)
+
+# Global lock to prevent concurrent schema definition
+_schema_lock = threading.Lock()
 
 class DuckDBService:
     def __init__(self):
@@ -58,8 +63,9 @@ class DuckDBService:
 
     def create_table(self):
         """Create necessary tables (Emails + Auth Tokens + Users + Files)."""
-        try:
-            # -----------------------------------------------------------
+        with _schema_lock:
+            try:
+                # -----------------------------------------------------------
             # 🚨 HARD RESET FOR SCHEMA MIGRATION
             # This drops the old tables to ensure they are recreated with the correct UNIQUE constraints.
             # Since you deleted your data, this is safe and necessary.

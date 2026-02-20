@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Dict, Optional
 from PIL import Image as PilImage
 import win32com.client
+from win32com.client import gencache
 import threading
 
 excel_lock = threading.Lock()
@@ -70,14 +71,28 @@ class ExcelGenerationService:
 
                 extraction_result = extraction_data.get("extraction_result", {})
 
-                excel = win32com.client.DispatchEx("Excel.Application")
+                # Use EnsureDispatch (early binding) so that Characters().Font
+                # is properly resolved via the Excel type library.
+                # Thread safety is guaranteed by excel_lock above.
+                excel = gencache.EnsureDispatch("Excel.Application")
                 excel.Visible = False
                 excel.DisplayAlerts = False
+                excel.ScreenUpdating = False
+                try:
+                    excel.Calculation = -4135  # xlCalculationManual
+                except Exception:
+                    pass
 
                 wb = excel.Workbooks.Open(output_path)
                 ws = wb.Worksheets(1)
 
                 self._fill_data(ws, extraction_result, output_path)
+
+                excel.ScreenUpdating = True
+                try:
+                    excel.Calculation = -4105  # xlCalculationAutomatic
+                except Exception:
+                    pass
 
                 wb.Save()
                 wb.Close(False)
@@ -108,6 +123,29 @@ class ExcelGenerationService:
         
         xlContinuous = 1
         xlThin = 2
+
+        def apply_borders(cell_or_range, col_start=None, col_end=None, target_row=None):
+            """Apply per-edge borders reliably via COM."""
+            if col_start is not None and col_end is not None and target_row is not None:
+                for c in range(col_start, col_end + 1):
+                    _c = ws.Cells(target_row, c)
+                    for edge in [xlEdgeLeft, xlEdgeTop, xlEdgeBottom, xlEdgeRight]:
+                        try:
+                            b = _c.Borders(edge)
+                            b.LineStyle = xlContinuous
+                            b.Weight = xlThin
+                            b.Color = color_black
+                        except Exception:
+                            pass
+            else:
+                for edge in [xlEdgeLeft, xlEdgeTop, xlEdgeBottom, xlEdgeRight]:
+                    try:
+                        b = cell_or_range.Borders(edge)
+                        b.LineStyle = xlContinuous
+                        b.Weight = xlThin
+                        b.Color = color_black
+                    except Exception:
+                        pass
         
         xlCenter = -4108
         xlLeft = -4131
@@ -136,8 +174,17 @@ class ExcelGenerationService:
         color_light_green = rgb_to_ole("E2EFDA")
         color_light_blue = rgb_to_ole("DDEBF7")
 
-        ws.Columns("D:D").ColumnWidth = 25
-        
+        # --- COLUMN WIDTHS (match screenshot) ---
+        ws.Columns("A:A").ColumnWidth = 6
+        ws.Columns("B:B").ColumnWidth = 38
+        ws.Columns("C:C").ColumnWidth = 20
+        ws.Columns("D:D").ColumnWidth = 22
+        ws.Columns("E:E").ColumnWidth = 22
+        ws.Columns("F:F").ColumnWidth = 8
+        ws.Columns("G:G").ColumnWidth = 8
+        ws.Columns("H:H").ColumnWidth = 16
+        ws.Columns("I:I").ColumnWidth = 16
+
         START_ROW = 12
         actual_rows = 0
 
@@ -166,49 +213,87 @@ class ExcelGenerationService:
                         price_val = self._to_float(selected_match.get("price"))
                         
                 # Col 1: SL NO
-                ws.Cells(row, 1).Value = idx + 1
+                cell_sl = ws.Cells(row, 1)
+                cell_sl.Value = idx + 1
+                cell_sl.Font.Bold = True
 
                 # Col 2: DESCRIPTION (Rich Text)
-                full_desc = f"Your Requirement:\n{desc_text}\n\nWe OFFER:\n{offering_text}"
+                # Build the combined text string
+                label1 = "Your Requirement:"
+                label2 = "We OFFER:"
+                full_desc = f"{label1}\n{desc_text}\n\n{label2}\n{offering_text}"
                 cell_desc = ws.Cells(row, 2)
                 cell_desc.Value = full_desc
-                
-                p1_start = 1
-                p1_len = len("Your Requirement:\n")
-                
-                p2_start = p1_start + p1_len
-                p2_len = len(desc_text) + 2
-                
-                p3_start = p2_start + p2_len
-                p3_len = len("We OFFER:\n")
-                
-                p4_start = p3_start + p3_len
-                p4_len = len(offering_text)
-                
-                if p1_len > 0:
-                    c1 = cell_desc.Characters(p1_start, p1_len).Font
-                    c1.Bold = True
-                    c1.Underline = 2
-                    c1.Color = color_purple
 
-                if p2_len > 0:
-                    c2 = cell_desc.Characters(p2_start, p2_len).Font
-                    c2.Bold = False
-                    c2.Color = color_black
+                # Step 1: Set whole-cell default font (body text inherits this)
+                cell_desc.Font.Name = "Calibri"
+                cell_desc.Font.Size = 11
+                cell_desc.Font.Bold = False
+                cell_desc.Font.Color = color_black
 
-                if p3_len > 0:
-                    c3 = cell_desc.Characters(p3_start, p3_len).Font
-                    c3.Bold = True
-                    c3.Underline = 2
-                    c3.Color = color_red
+                total_len = len(full_desc)
 
-                if p4_len > 0:
-                    c4 = cell_desc.Characters(p4_start, p4_len).Font
-                    c4.Bold = False
-                    c4.Color = color_black
+                # Step 2: Format "Your Requirement:" — purple, bold, underline
+                # Use GetCharacters() — works reliably with win32com (unlike Characters())
+                lbl1_start = 1
+                lbl1_len = len(label1)
+                try:
+                    if lbl1_len > 0 and lbl1_start + lbl1_len - 1 <= total_len:
+                        ch1 = cell_desc.GetCharacters(lbl1_start, lbl1_len).Font
+                        ch1.Name = "Calibri"
+                        ch1.Size = 13
+                        ch1.Bold = True
+                        ch1.Underline = 2   # xlUnderlineStyleSingle
+                        ch1.Color = color_purple
+                except Exception as fmt_err:
+                    logger.warning(f"Rich text label1 row {row}: {fmt_err}")
 
-                # Col 3: BRAND
-                ws.Cells(row, 3).Value = brand_text
+                # Step 3: Format "We OFFER:" — red, bold, underline
+                # Starts just after: label1 + \n + desc_text + \n\n  (all 1-indexed)
+                lbl2_start = len(label1) + 1 + len(desc_text) + 2 + 1
+                lbl2_len = len(label2)
+                try:
+                    if lbl2_len > 0 and lbl2_start + lbl2_len - 1 <= total_len:
+                        ch2 = cell_desc.GetCharacters(lbl2_start, lbl2_len).Font
+                        ch2.Name = "Calibri"
+                        ch2.Size = 13
+                        ch2.Bold = True
+                        ch2.Underline = 2   # xlUnderlineStyleSingle
+                        ch2.Color = color_red
+                except Exception as fmt_err:
+                    logger.warning(f"Rich text label2 row {row}: {fmt_err}")
+
+                # Step 4: Bold the body text under each label
+                # desc_text starts just after label1 + \n (1-indexed)
+                desc_start = len(label1) + 1 + 1   # after "Your Requirement:\n"
+                desc_len = len(desc_text)
+                try:
+                    if desc_len > 0 and desc_start + desc_len - 1 <= total_len:
+                        ch_desc = cell_desc.GetCharacters(desc_start, desc_len).Font
+                        ch_desc.Bold = True
+                        ch_desc.Color = color_black
+                        ch_desc.Size = 11
+                except Exception as fmt_err:
+                    logger.warning(f"Rich text desc body row {row}: {fmt_err}")
+
+                # offering_text starts just after label2 + \n
+                offer_start = lbl2_start + lbl2_len + 1
+                offer_len = len(offering_text)
+                try:
+                    if offer_len > 0 and offer_start + offer_len - 1 <= total_len:
+                        ch_offer = cell_desc.GetCharacters(offer_start, offer_len).Font
+                        ch_offer.Bold = True
+                        ch_offer.Color = color_black
+                        ch_offer.Size = 11
+                except Exception as fmt_err:
+                    logger.warning(f"Rich text offer body row {row}: {fmt_err}")
+
+                # Col 3: BRAND (bold)
+                cell_brand = ws.Cells(row, 3)
+                cell_brand.Value = brand_text
+                cell_brand.Font.Bold = True
+                cell_brand.Font.Name = "Calibri"
+                cell_brand.Font.Size = 11
                 
                 # Col 4: IMAGE (NEW & CENTERED)
                 if selected_match and selected_match.get("image_url"):
@@ -219,7 +304,7 @@ class ExcelGenerationService:
                             img_data = BytesIO(response.content)
                             pil_img = PilImage.open(img_data).convert("RGBA")
                             
-                            canvas_size = (180, 180)
+                            canvas_size = (90, 90)
                             canvas = PilImage.new('RGBA', canvas_size, (255, 255, 255, 0))
                             
                             pil_img.thumbnail(canvas_size, PilImage.LANCZOS)
@@ -238,8 +323,8 @@ class ExcelGenerationService:
                             canvas.save(temp_img_path, format='PNG')
                             
                             cell_img = ws.Cells(row, 4)
-                            pic_width = 135
-                            pic_height = 135
+                            pic_width = 80
+                            pic_height = 80
                             pic_left = cell_img.Left + (cell_img.Width - pic_width) / 2
                             pic_top = cell_img.Top + (cell_img.Height - pic_height) / 2
                             
@@ -321,23 +406,45 @@ class ExcelGenerationService:
                 cell_sp.Font.Size = 11
                 cell_sp.Font.Bold = True
 
-                # --- APPLY BORDERS & ALIGNMENT ---
-                ws.Rows(row).RowHeight = 140 
-                
-                for col in range(1, 15):
+                # --- APPLY ROW HEIGHT ---
+                ws.Rows(row).RowHeight = 140
+
+                # --- APPLY BORDERS & ALIGNMENT (all visible cols 1-9) ---
+                for col in range(1, 10):
                     cell = ws.Cells(row, col)
-                    cell.Borders.LineStyle = xlContinuous
-                    cell.Borders.Weight = xlThin
-                    cell.Borders.Color = color_black
-                    
+
+                    # Apply each border edge explicitly – most reliable COM approach
+                    for edge in [xlEdgeLeft, xlEdgeTop, xlEdgeBottom, xlEdgeRight]:
+                        try:
+                            b = cell.Borders(edge)
+                            b.LineStyle = xlContinuous
+                            b.Weight = xlThin
+                            b.Color = color_black
+                        except Exception:
+                            pass
+
+                    cell.WrapText = True
                     if col == 2:
                         cell.HorizontalAlignment = xlLeft
                         cell.VerticalAlignment = xlTop
-                        cell.WrapText = True
                     else:
                         cell.HorizontalAlignment = xlCenter
                         cell.VerticalAlignment = xlCenter
-                        cell.WrapText = True
+
+                # Apply borders to internal calc columns 10-14 as well
+                for col in range(10, 15):
+                    cell = ws.Cells(row, col)
+                    for edge in [xlEdgeLeft, xlEdgeTop, xlEdgeBottom, xlEdgeRight]:
+                        try:
+                            b = cell.Borders(edge)
+                            b.LineStyle = xlContinuous
+                            b.Weight = xlThin
+                            b.Color = color_black
+                        except Exception:
+                            pass
+                    cell.HorizontalAlignment = xlCenter
+                    cell.VerticalAlignment = xlCenter
+                    cell.WrapText = True
 
             except Exception as row_error:
                 logger.error(f"Error processing row {row}: {row_error}")
@@ -392,11 +499,7 @@ class ExcelGenerationService:
                 c9.HorizontalAlignment = xlCenter
                 c9.NumberFormat = "#,##0.00"
                 
-                for c in range(1, 10):
-                    cell = ws.Cells(r, c)
-                    cell.Borders.LineStyle = xlContinuous
-                    cell.Borders.Weight = xlThin
-                    cell.Borders.Color = color_black
+                apply_borders(None, 1, 9, r)
 
             # 2. Grand Total (16pt Red Bold, Yellow Fill)
             ws.Rows(GRAND_ROW).RowHeight = 25 
@@ -419,9 +522,7 @@ class ExcelGenerationService:
             for c in range(1, 10):
                 cell = ws.Cells(GRAND_ROW, c)
                 cell.Interior.Color = color_yellow_fill
-                cell.Borders.LineStyle = xlContinuous
-                cell.Borders.Weight = xlThin
-                cell.Borders.Color = color_black
+            apply_borders(None, 1, 9, GRAND_ROW)
 
             # 3. Note Row (Red Bold Note)
             note_cell = ws.Cells(NOTE_ROW, 1)
@@ -432,14 +533,15 @@ class ExcelGenerationService:
             note_cell.HorizontalAlignment = xlLeft
             note_cell.VerticalAlignment = xlCenter
             
-            for c in range(1, 10):
-                cell = ws.Cells(NOTE_ROW, c)
-                cell.Borders.LineStyle = xlContinuous
-                cell.Borders.Weight = xlThin
-                cell.Borders.Color = color_black
+            apply_borders(None, 1, 9, NOTE_ROW)
 
             # --- TERMS & CONDITIONS ---
             TERMS_ROW = NOTE_ROW + 1 
+
+            try:
+                ws.HPageBreaks.Add(Before=ws.Rows(TERMS_ROW))
+            except Exception as e:
+                logger.warning(f"Failed to add page break before TERMS: {e}")
 
             ws.Range(ws.Cells(TERMS_ROW, 1), ws.Cells(TERMS_ROW, 9)).Merge()
             t_cell = ws.Cells(TERMS_ROW, 1)
@@ -450,11 +552,7 @@ class ExcelGenerationService:
             t_cell.Interior.Color = color_grey_fill
             t_cell.HorizontalAlignment = xlLeft
             
-            for c in range(1, 10):
-                cell = ws.Cells(TERMS_ROW, c)
-                cell.Borders.LineStyle = xlContinuous
-                cell.Borders.Weight = xlThin
-                cell.Borders.Color = color_black
+            apply_borders(None, 1, 9, TERMS_ROW)
 
             # ---- TERMS ROWS ----
             terms_data = [
@@ -483,11 +581,7 @@ class ExcelGenerationService:
                 c_val.Font.Bold = True
                 c_val.HorizontalAlignment = xlLeft
                 
-                for c in range(1, 10):
-                    cell = ws.Cells(current_row, c)
-                    cell.Borders.LineStyle = xlContinuous
-                    cell.Borders.Weight = xlThin
-                    cell.Borders.Color = color_black
+                apply_borders(None, 1, 9, current_row)
 
             # --- FOOTER MESSAGES & DYNAMIC PRINT AREA ---
             FS_START = current_row + 1
@@ -538,11 +632,15 @@ class ExcelGenerationService:
 
             # THE FIX: Extend Blue Line to include template's contact bar images
             FINAL_PRINT_ROW = DISCLAIMER_ROW + 2 
-            ws.PageSetup.PrintArea = f"$A$1:$I${FINAL_PRINT_ROW}"
 
-            ws.PageSetup.Zoom = False
-            ws.PageSetup.FitToPagesWide = 1
-            ws.PageSetup.FitToPagesTall = False
+            try:
+                ws.PageSetup.PrintArea = f"$A$1:$I${FINAL_PRINT_ROW}"
+            except Exception as e:
+                logger.warning(f"PrintArea error: {e}")
+
+            # PrintArea controls the print boundary.
+            # FitToPage / FitToPagesWide / FitToPagesTall are NOT reliably
+            # settable via COM in newer Excel and cause exceptions — removed.
 
         except Exception as e:
             logger.error(f"Error writing totals/footer: {e}")
