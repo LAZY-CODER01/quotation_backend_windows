@@ -169,7 +169,7 @@ class ExcelGenerationService:
         color_black = rgb_to_ole("000000")
         color_red = rgb_to_ole("FF0000")
         color_purple = rgb_to_ole("800080")
-        color_yellow_fill = rgb_to_ole("FFFF66")
+        color_yellow_fill = rgb_to_ole("#FFFF00")
         color_grey_fill = rgb_to_ole("D9D9D9")
         color_light_green = rgb_to_ole("E2EFDA")
         color_light_blue = rgb_to_ole("DDEBF7")
@@ -304,7 +304,7 @@ class ExcelGenerationService:
                             img_data = BytesIO(response.content)
                             pil_img = PilImage.open(img_data).convert("RGBA")
                             
-                            canvas_size = (90, 90)
+                            canvas_size = (130, 130)
                             canvas = PilImage.new('RGBA', canvas_size, (255, 255, 255, 0))
                             
                             pil_img.thumbnail(canvas_size, PilImage.LANCZOS)
@@ -323,8 +323,8 @@ class ExcelGenerationService:
                             canvas.save(temp_img_path, format='PNG')
                             
                             cell_img = ws.Cells(row, 4)
-                            pic_width = 80
-                            pic_height = 80
+                            pic_width = 90
+                            pic_height = 90
                             pic_left = cell_img.Left + (cell_img.Width - pic_width) / 2
                             pic_top = cell_img.Top + (cell_img.Height - pic_height) / 2
                             

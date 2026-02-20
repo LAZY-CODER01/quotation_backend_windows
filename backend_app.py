@@ -25,6 +25,7 @@ from app.auth.jwt_required import jwt_required
 from app.services.storage_service import StorageService
 from app.utils.helpers import get_uae_time
 
+import tempfile
 from werkzeug.utils import secure_filename
 from app.utils.file_parser import extract_text_from_file
 from app.services.ai_email_extraction import extract_price_from_content
@@ -1049,8 +1050,10 @@ def create_flask_app():
             extracted_amount = 0.0
             if not amount or amount == '0' or amount == 'undefined': 
                 try:
-                   # Save temporarily to parse
-                   temp_path = f"/tmp/{secure_filename(file.filename)}"
+                   # Save temporarily to parse (cross-platform temp file)
+                   suffix = os.path.splitext(secure_filename(file.filename))[1]
+                   fd, temp_path = tempfile.mkstemp(suffix=suffix)
+                   os.close(fd)
                    file.save(temp_path)
                    
                    # Parse & Extract
@@ -1157,8 +1160,10 @@ def create_flask_app():
         extracted_amount = 0.0
         if not amount or amount == '0' or amount == 'undefined': 
             try:
-               # Save temporarily to parse
-               temp_path = f"/tmp/cpo_{secure_filename(file.filename)}"
+               # Save temporarily to parse (cross-platform temp file)
+               suffix = os.path.splitext(secure_filename(file.filename))[1]
+               fd, temp_path = tempfile.mkstemp(suffix=suffix)
+               os.close(fd)
                file.save(temp_path)
                
                # Parse & Extract

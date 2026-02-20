@@ -65,122 +65,106 @@ class DuckDBService:
         """Create necessary tables (Emails + Auth Tokens + Users + Files)."""
         with _schema_lock:
             try:
-                # -----------------------------------------------------------
-            # 🚨 HARD RESET FOR SCHEMA MIGRATION
-            # This drops the old tables to ensure they are recreated with the correct UNIQUE constraints.
-            # Since you deleted your data, this is safe and necessary.
-            # -----------------------------------------------------------
-            # try:
-            #     # 1. Drop Child Tables (to remove FK dependencies)
-            #     self.connection.execute("DROP TABLE IF EXISTS quotations")
-            #     self.connection.execute("DROP TABLE IF EXISTS cpo_orders")
-                
-            #     # 2. Check if email_extractions exists and verify constraint
-            #     # If we are in a broken state, we drop the main table to rebuild it fresh.
-            #     self.connection.execute("DROP TABLE IF EXISTS email_extractions")
-            #     logger.info("♻️  Dropped old tables to force schema update.")
-            # except Exception as e:
-            #     logger.warning(f"⚠️ Reset warning: {e}")
-            # # -----------------------------------------------------------
+                # 1. Base Sequences
+                self.connection.execute("CREATE SEQUENCE IF NOT EXISTS id_sequence START 1;")
 
+                # 2. Main Emails Table
+                self.connection.execute("""
+                    CREATE TABLE IF NOT EXISTS email_extractions (
+                        id INTEGER DEFAULT nextval('id_sequence'),
+                        gmail_id VARCHAR PRIMARY KEY,
+                        ticket_number VARCHAR UNIQUE,
+                        ticket_status VARCHAR DEFAULT 'INBOX',
+                        ticket_priority VARCHAR DEFAULT 'NORMAL',
+                        quotation_files JSON DEFAULT '[]',
+                        cpo_files JSON DEFAULT '[]',
+                        activity_logs JSON DEFAULT '[]',
+                        quotation_amount VARCHAR,
+                        sender VARCHAR,
+                        company_name VARCHAR,
+                        received_at TIMESTAMP,
+                        subject VARCHAR,
+                        body_text TEXT,
+                        extraction_result JSON,
+                        extraction_status VARCHAR,
+                        updated_at TIMESTAMP,
+                        assigned_to VARCHAR,
+                        internal_notes JSON DEFAULT '[]',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
 
-            # 1. Base Sequences
-            self.connection.execute("CREATE SEQUENCE IF NOT EXISTS id_sequence START 1;")
+                # 3. Normalized File Tables
+                self.connection.execute("""
+                    CREATE TABLE IF NOT EXISTS quotations (
+                        id INTEGER PRIMARY KEY DEFAULT nextval('id_sequence'),
+                        ticket_number VARCHAR,
+                        reference_id VARCHAR,
+                        file_name VARCHAR,
+                        file_url VARCHAR,
+                        amount VARCHAR,
+                        uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (ticket_number) REFERENCES email_extractions(ticket_number)
+                    );
+                """)
 
-            # 2. Main Emails Table 
-            # (Now this will definitely run because we dropped the old one above)
-            self.connection.execute("""
-                CREATE TABLE IF NOT EXISTS email_extractions (
-                    id INTEGER DEFAULT nextval('id_sequence'),
-                    gmail_id VARCHAR PRIMARY KEY,
-                    ticket_number VARCHAR UNIQUE, -- 👈 This is the critical fix
-                    ticket_status VARCHAR DEFAULT 'INBOX',
-                    ticket_priority VARCHAR DEFAULT 'NORMAL',
-                    quotation_files JSON DEFAULT '[]',
-                    cpo_files JSON DEFAULT '[]',
-                    activity_logs JSON DEFAULT '[]',
-                    quotation_amount VARCHAR,
-                    sender VARCHAR,
-                    company_name VARCHAR, -- 👈 Added company_name
-                    received_at TIMESTAMP,
-                    subject VARCHAR,
-                    body_text TEXT,
-                    extraction_result JSON,
-                    extraction_status VARCHAR,
-                    updated_at TIMESTAMP,
-                    assigned_to VARCHAR,
-                    internal_notes JSON DEFAULT '[]',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
+                self.connection.execute("""
+                    CREATE TABLE IF NOT EXISTS cpo_orders (
+                        id INTEGER PRIMARY KEY DEFAULT nextval('id_sequence'),
+                        ticket_number VARCHAR,
+                        reference_id VARCHAR,
+                        file_name VARCHAR,
+                        file_url VARCHAR,
+                        amount VARCHAR,
+                        uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (ticket_number) REFERENCES email_extractions(ticket_number)
+                    );
+                """)
 
-            # 3. Create Normalized Tables for Files
-            # These will now succeed because ticket_number is guaranteed to be UNIQUE
-            self.connection.execute("""
-                CREATE TABLE IF NOT EXISTS quotations (
-                    id INTEGER PRIMARY KEY DEFAULT nextval('id_sequence'),
-                    ticket_number VARCHAR,
-                    reference_id VARCHAR,
-                    file_name VARCHAR,
-                    file_url VARCHAR,
-                    amount VARCHAR,
-                    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (ticket_number) REFERENCES email_extractions(ticket_number)
-                );
-            """)
+                # 4. Auth Tables
+                self.connection.execute("CREATE TABLE IF NOT EXISTS user_tokens (user_id VARCHAR PRIMARY KEY, token_json JSON, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+                self.connection.execute("CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), username VARCHAR UNIQUE, password_hash VARCHAR, employee_code VARCHAR UNIQUE, role VARCHAR DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+                self.connection.execute("CREATE TABLE IF NOT EXISTS company_tokens (id INTEGER PRIMARY KEY, token_json TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
 
-            self.connection.execute("""
-                CREATE TABLE IF NOT EXISTS cpo_orders (
-                    id INTEGER PRIMARY KEY DEFAULT nextval('id_sequence'),
-                    ticket_number VARCHAR,
-                    reference_id VARCHAR,
-                    file_name VARCHAR,
-                    file_url VARCHAR,
-                    amount VARCHAR,
-                    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (ticket_number) REFERENCES email_extractions(ticket_number)
-                );
-            """)
+                # 5. Clients Table
+                self.connection.execute("""
+                    CREATE TABLE IF NOT EXISTS clients (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        name VARCHAR,
+                        business_name VARCHAR,
+                        email VARCHAR UNIQUE,
+                        phone VARCHAR,
+                        tags JSON DEFAULT '[]',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
 
-            # 4. Auth Tables (Users, Tokens)
-            self.connection.execute("CREATE TABLE IF NOT EXISTS user_tokens (user_id VARCHAR PRIMARY KEY, token_json JSON, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
-            self.connection.execute("CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), username VARCHAR UNIQUE, password_hash VARCHAR, employee_code VARCHAR UNIQUE, role VARCHAR DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
-            self.connection.execute("CREATE TABLE IF NOT EXISTS company_tokens (id INTEGER PRIMARY KEY, token_json TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
-            
-            # 5. Clients Table
-            self.connection.execute("""
-                CREATE TABLE IF NOT EXISTS clients (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    name VARCHAR,
-                    business_name VARCHAR,
-                    email VARCHAR UNIQUE,
-                    phone VARCHAR,
-                    tags JSON DEFAULT '[]',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            
-            # Helper to ensure columns exist (in case we didn't drop tables above)
-            
-            self._ensure_column_exists("users", "employee_code", "VARCHAR")
-            self._ensure_column_exists("email_extractions", "company_name", "VARCHAR")
+                logger.info("✅ Database tables initialized (Emails, Tokens, Users, Quotations, CPO)")
+            except Exception as e:
+                logger.error(f"❌ Table creation error: {str(e)}")
+                return False
 
-            logger.info("✅ Database tables initialized (Emails, Tokens, Users, Quotations, CPO)")
-            return True
-        except Exception as e:
-            logger.error(f"❌ Table creation error: {str(e)}")
-            return False
-        
+        # ✅ Run ALTER TABLE migrations OUTSIDE the schema lock so they don't
+        # cause write-write conflicts with other threads' CREATE TABLE statements.
+        self._ensure_column_exists("users", "employee_code", "VARCHAR")
+        self._ensure_column_exists("email_extractions", "company_name", "VARCHAR")
+        return True
+
     def _ensure_column_exists(self, table, column, data_type):
-        """Helper to safely add columns to existing tables."""
+        """Helper to safely add a column to an existing table if it's missing."""
         try:
             self.connection.execute(f"SELECT {column} FROM {table} LIMIT 1")
-        except:
+        except Exception:
             try:
                 logger.info(f"🛠️ Column '{column}' missing in {table}. Adding it now...")
                 self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {data_type}")
             except Exception as e:
-                logger.error(f"Failed to add column {column}: {e}")
+                # Silently ignore write-write conflicts (another worker already added it)
+                err_str = str(e)
+                if 'write-write conflict' in err_str or 'already exists' in err_str.lower():
+                    logger.warning(f"⚠️ Skipping ALTER for '{column}' on '{table}': {err_str}")
+                else:
+                    logger.error(f"Failed to add column {column} to {table}: {e}")
 
     # --- Ticket Logic ---
 
