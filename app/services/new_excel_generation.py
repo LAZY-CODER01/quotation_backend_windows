@@ -24,18 +24,6 @@ class ExcelGenerationService:
         self.template_path = os.path.abspath(template_path)
         self.output_dir = os.path.abspath(output_dir)
         
-        # Ensure output directory exists - safer cleanup for Docker/Windows to avoid "Device Busy"
-        if os.path.exists(self.output_dir):
-            for filename in os.listdir(self.output_dir):
-                file_path = os.path.join(self.output_dir, filename)
-                try:
-                    if os.path.isfile(file_path) or os.path.islink(file_path):
-                        os.unlink(file_path)
-                    elif os.path.isdir(file_path):
-                        shutil.rmtree(file_path)
-                except Exception as e:
-                    logger.error(f"Failed to delete {file_path}. Reason: {e}")
-                    
         os.makedirs(self.output_dir, exist_ok=True)
         logger.info(f"Excel Service initialized. Template: {template_path}")
 
@@ -83,7 +71,14 @@ class ExcelGenerationService:
                     pass
 
                 wb = excel.Workbooks.Open(output_path)
-                ws = wb.Worksheets(1)
+                ws = None
+                try:
+                    ws = wb.Worksheets(1)
+                except:
+                    raise Exception("Worksheet initialization failed")
+
+                if ws is None:
+                    raise Exception("Worksheet is None")
 
                 self._fill_data(ws, extraction_result, output_path)
 
@@ -108,11 +103,32 @@ class ExcelGenerationService:
                 return None
 
             finally:
-                if excel:
-                    try:
+                try:
+                    if wb:
+                        wb.Close(SaveChanges=True)
+                except:
+                    pass
+
+                try:
+                    if excel:
                         excel.Quit()
-                    except:
-                        pass
+                except:
+                    pass
+
+                try:
+                    del ws
+                except:
+                    pass
+
+                try:
+                    del wb
+                except:
+                    pass
+
+                try:
+                    del excel
+                except:
+                    pass
 
                 pythoncom.CoUninitialize()
 
@@ -174,17 +190,6 @@ class ExcelGenerationService:
         color_grey_fill = rgb_to_ole("D9D9D9")
         color_light_green = rgb_to_ole("E2EFDA")
         color_light_blue = rgb_to_ole("DDEBF7")
-
-        # --- COLUMN WIDTHS (match screenshot) ---
-        ws.Columns(1).ColumnWidth = 6
-        ws.Columns(2).ColumnWidth = 38
-        ws.Columns(3).ColumnWidth = 20
-        ws.Columns(4).ColumnWidth = 22
-        ws.Columns(5).ColumnWidth = 22
-        ws.Columns(6).ColumnWidth = 8
-        ws.Columns(7).ColumnWidth = 8
-        ws.Columns(8).ColumnWidth = 16
-        ws.Columns(9).ColumnWidth = 16
 
         START_ROW = 12
         actual_rows = 0

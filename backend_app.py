@@ -640,8 +640,9 @@ def create_flask_app():
             timestamp = get_uae_time().strftime("%Y%m%d_%H%M%S")
             download_filename = f"Quotation_{clean_subject}_{timestamp}.xlsx"
 
+            absolute_path = os.path.abspath(output_file)
             return send_file(
-                os.path.abspath(output_file),
+                absolute_path,
                 as_attachment=True,
                 download_name=download_filename,
                 mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -689,8 +690,9 @@ def create_flask_app():
             if '..' in filename or not filename.endswith('.xlsx'):
                 return jsonify({'error': 'Invalid filename'}), 400
                 
+            absolute_path = os.path.abspath(file_path)
             return send_file(
-                os.path.abspath(file_path),
+                absolute_path,
                 as_attachment=True,
                 download_name=filename,
                 mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
