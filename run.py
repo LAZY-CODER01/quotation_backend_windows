@@ -7,6 +7,22 @@ that runs natively on Windows.
 Usage:
     python run.py
 """
+import sys
+import io
+
+# Force stdout and stderr to UTF-8 to prevent UnicodeEncodeError on Windows
+try:
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
+    elif hasattr(sys.stdout, 'buffer'):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    
+    if hasattr(sys.stderr, 'reconfigure'):
+        sys.stderr.reconfigure(encoding='utf-8')
+    elif hasattr(sys.stderr, 'buffer'):
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+except Exception:
+    pass
 
 import threading
 import os
@@ -34,7 +50,7 @@ if __name__ == '__main__':
     port = int(os.getenv("SERVER_PORT", "8000"))
     threads = int(os.getenv("SERVER_THREADS", "4"))
 
-    print(f"🚀 Starting QuoteSnap backend on http://{host}:{port}")
+    print(f"[START] Starting QuoteSnap backend on http://{host}:{port}")
     print(f"   Threads: {threads}")
     print(f"   Press Ctrl+C to stop.\n")
 

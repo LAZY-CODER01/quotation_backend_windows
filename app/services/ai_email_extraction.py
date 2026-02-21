@@ -6,9 +6,9 @@ from dotenv import load_dotenv
 
 
 # Load environment variables (if using .env file)
-print(f"🔄 Loading environment variables from .env file...")
+print(f"[INIT] Loading environment variables from .env file...")
 env_loaded = load_dotenv()
-print(f"📋 Environment loaded: {env_loaded}")
+print(f"[INFO] Environment loaded: {env_loaded}")
 
 def normalize_input(text: str) -> str:
     """
@@ -82,7 +82,7 @@ def extract_hardware_quotation_details(email_content: str):
     # Check for DBSQ priority code
     is_priority = contains_dbsq_code(normalized_text)
     if is_priority:
-        print(f"🚨 DBSQ Code Detected! Forcing VALID processing.")
+        print(f"[ALERT] DBSQ Code Detected! Forcing VALID processing.")
     """
     Single AI call that validates email and extracts quotation data if valid.
     Returns [IRRELEVANT] for non-quotation emails or JSON for valid requests.
@@ -92,15 +92,15 @@ def extract_hardware_quotation_details(email_content: str):
     # Initialize OpenAI client
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        print("❌ OPENAI_API_KEY not found in environment variables")
+        print("[ERROR] OPENAI_API_KEY not found in environment variables")
         raise ValueError("OPENAI_API_KEY not found in environment variables")
     
-    print(f"🔑 OpenAI API key found (length: {len(api_key)})")
+    print(f"[INFO] OpenAI API key found (length: {len(api_key)})")
     try:
         client = OpenAI(api_key=api_key)
-        print(f"✅ OpenAI client initialized successfully")
+        print(f"[SUCCESS] OpenAI client initialized successfully")
     except Exception as e:
-        print(f"❌ Failed to initialize OpenAI client: {str(e)}")
+        print(f"[ERROR] Failed to initialize OpenAI client: {str(e)}")
         raise Exception(f"Failed to initialize OpenAI client: {str(e)}")
 
     # Create unified prompt for validation + extraction
@@ -202,7 +202,7 @@ RESPONSE (MUST be valid JSON only, no additional text):"""
 
     # Make API call with JSON mode enabled for guaranteed JSON output
   
-    print(f"🔄 Making OpenAI API call with JSON mode...")
+    print(f"[API] Making OpenAI API call with JSON mode...")
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -213,14 +213,14 @@ RESPONSE (MUST be valid JSON only, no additional text):"""
             response_format={"type": "json_object"},  # Enable JSON mode
             temperature=0
         )
-        print(f"✅ OpenAI API call completed successfully")
+        print(f"[SUCCESS] OpenAI API call completed successfully")
     except Exception as e:
-        print(f"❌ OpenAI API call failed: {str(e)}")
+        print(f"[ERROR] OpenAI API call failed: {str(e)}")
         raise e
 
     # Extract the response text
     response_text = response.choices[0].message.content.strip()
-    print(f"📄 Raw API response: {response_text[:200]}{'...' if len(response_text) > 200 else ''}")
+    print(f"[DATA] Raw API response: {response_text[:200]}{'...' if len(response_text) > 200 else ''}")
 
     # Parse JSON from response (handles markdown, code blocks, etc.)
     try:
@@ -229,7 +229,7 @@ RESPONSE (MUST be valid JSON only, no additional text):"""
         # Check if email is irrelevant
         if parsed_data.get("status") == "IRRELEVANT":
             if is_priority:
-                print(f"⚠️ AI returned IRRELEVANT but DBSQ code found. Overriding to VALID.")
+                print(f"[WARN] AI returned IRRELEVANT but DBSQ code found. Overriding to VALID.")
                 return {
                     "status": "VALID",
                     "sender_name": "",
@@ -243,7 +243,7 @@ RESPONSE (MUST be valid JSON only, no additional text):"""
         return parsed_data
         
     except (json.JSONDecodeError, ValueError) as e:
-        print(f"⚠️ Failed to parse JSON from response: {str(e)}")
+        print(f"[WARN] Failed to parse JSON from response: {str(e)}")
         print(f"Raw response: {response_text}")
         return {"status": "ERROR", "reason": "Failed to parse response", "raw_response": response_text}
 
