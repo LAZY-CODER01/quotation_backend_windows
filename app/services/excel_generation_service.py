@@ -69,14 +69,14 @@ class ExcelGenerationService:
             extraction_result = extraction_data.get('extraction_result', {})
             if extraction_result:
                 try:
-                    from win32com.client import Dispatch
+                    import win32com.client
                     import pythoncom
                     
                     # Initialize COM
                     pythoncom.CoInitialize()
                     
                     # Open Excel application
-                    excel = Dispatch("Excel.Application")
+                    excel = win32com.client.DispatchEx("Excel.Application")
                     excel.Visible = False  # Run in background
                     excel.DisplayAlerts = False  # Suppress dialogs
                     
@@ -333,40 +333,40 @@ if __name__ == "__main__":
         "updated_at": "Mon, 06 Oct 2025 16:24:48 GMT"
     }
     
-    print("🧪 Testing Excel Generation Service")
+    print(" Testing Excel Generation Service")
     print("=" * 50)
     
     # Initialize the service
     excel_service = ExcelGenerationService(template_path="QuotationFormat.xlsx")
     
     # Test: Generate quotation Excel
-    print("\n📊 Generating quotation Excel...")
+    print("\n Generating quotation Excel...")
     output_file = excel_service.generate_quotation_excel(
         gmail_id=test_data['gmail_id'],
         extraction_data=test_data
     )
 
     if output_file:
-        print(f"✅ Excel generation successful!")
+        print(f"  Excel generation successful!")
         print(f"   - File path: {output_file}")
 
         # Get file info
-        print(f"\n📄 Getting file information...")
+        print(f"\n Getting file information...")
         file_info = excel_service.get_file_info(output_file)
         if file_info:
-            print(f"✅ File info retrieved:")
+            print(f"  File info retrieved:")
             print(f"   - Filename: {file_info['filename']}")
             print(f"   - Size: {file_info['size_mb']} MB ({file_info['size_bytes']} bytes)")
             print(f"   - Created: {file_info['created']}")
         else:
-            print(f"❌ Failed to get file information")
+            print(f"  Failed to get file information")
 
-        print(f"\n🎯 Test completed successfully!")
-        print(f"📁 You can find the generated file at: {os.path.abspath(output_file)}")
+        print(f"\n Test completed successfully!")
+        print(f" You can find the generated file at: {os.path.abspath(output_file)}")
         #open the generated file automatically 
         os.startfile(os.path.abspath(output_file))
 
     else:
-        print(f"❌ Excel generation failed!")
+        print(f"  Excel generation failed!")
 
     print("\n" + "=" * 50)

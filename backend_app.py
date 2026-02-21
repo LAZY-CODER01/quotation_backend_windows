@@ -80,14 +80,14 @@ def start_company_gmail_monitoring():
         lock_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quotesnap_monitor.lock")
         monitoring_lock_file = open(lock_path, 'w')
         _acquire_lock(monitoring_lock_file)
-        print("🔒 Worker acquired monitoring lock. Proceeding to start monitoring...")
+        print(" Worker acquired monitoring lock. Proceeding to start monitoring...")
     except IOError:
-        print("🔒 Monitoring lock held by another worker. Skipping startup.")
+        print(" Monitoring lock held by another worker. Skipping startup.")
         return
 
     db = DuckDBService()
     if not db.connect():
-        print("❌ DB connection failed for Gmail startup")
+        print("  DB connection failed for Gmail startup")
         return
 
     # Check for company token (ID=1)
@@ -105,14 +105,14 @@ def start_company_gmail_monitoring():
              # Only start if auth success
             interval = Config.EMAIL_CHECK_INTERVAL
             gmail.start_monitoring(check_interval=interval)
-            print(f"✅ Company Gmail monitoring started with {interval}s interval")
+            print(f"  Company Gmail monitoring started with {interval}s interval")
         else:
-            print("❌ Gmail authentication failed (Initial Startup)")
+            print("  Gmail authentication failed (Initial Startup)")
     except Exception as e:
-        print(f"❌ Error starting Gmail monitoring: {e}")
+        print(f"  Error starting Gmail monitoring: {e}")
 
-# 🔥 AUTO START ON APP BOOT
-# 🔥 AUTO START moved to create_flask_app
+#  AUTO START ON APP BOOT
+#  AUTO START moved to create_flask_app
 
 
 def setup_logging():
@@ -381,7 +381,7 @@ def create_flask_app():
             username = data.get('username')
             password = data.get('password')
             role = data.get('role', 'user')
-            # ✅ Accept manual employee code (optional)
+            #   Accept manual employee code (optional)
             employee_code = data.get('employee_code')
 
             if not username or not password:
@@ -690,7 +690,7 @@ def create_flask_app():
                 return jsonify({'error': 'Invalid filename'}), 400
                 
             return send_file(
-                file_path,
+                os.path.abspath(file_path),
                 as_attachment=True,
                 download_name=filename,
                 mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -767,7 +767,7 @@ def create_flask_app():
             if db.connect():
                 success = db.update_ticket_priority(gmail_id, priority)
                 if success:
-                    # ✅ Log Activity
+                    #   Log Activity
                     try:
                         db.add_activity_log(
                             gmail_id, 
@@ -778,7 +778,7 @@ def create_flask_app():
                     except Exception as log_err:
                         logger.error(f"Logging failed: {log_err}")
                         
-                    db.disconnect() # 👈 Disconnect AFTER logging
+                    db.disconnect() #  Disconnect AFTER logging
                     return jsonify({'success': True, 'priority': priority})
                 else:
                     db.disconnect()
@@ -811,7 +811,7 @@ def create_flask_app():
                 
                 db.connection.commit()
 
-                # ✅ Log Activity
+                #   Log Activity
                 try:
                     db.add_activity_log(
                         gmail_id, 
@@ -1059,7 +1059,7 @@ def create_flask_app():
                    # Parse & Extract
                    extraction = extract_grand_total(temp_path)
                    extracted_amount = extraction.get('amount', 0.0)
-                   logger.info(f"🤖 Extracted Amount: {extracted_amount} from {file.filename}")
+                   logger.info(f" Extracted Amount: {extracted_amount} from {file.filename}")
                    
                    # Reset file pointer for upload
                    file.seek(0) 
@@ -1086,7 +1086,7 @@ def create_flask_app():
             unique_id = uuid.uuid4().hex
             folder_path = f"snapquote/tickets/{gmail_id}"
             
-            # ✅ Upload to Cloudinary
+            #   Upload to Cloudinary
             storage = StorageService()
             file_url = storage.upload_file(
                 file, 
@@ -1112,7 +1112,7 @@ def create_flask_app():
             if db.connect():
                 success, error_msg = db.add_quotation_file(gmail_id, file_data)
                 if success:
-                    # ✅ Log Activity
+                    #   Log Activity
                     try:
                         # 1. Log Upload
                         db.add_activity_log(
@@ -1132,7 +1132,7 @@ def create_flask_app():
                     except Exception as log_err:
                         logger.error(f"Logging failed: {log_err}")
 
-                    db.disconnect() # 👈 Disconnect AFTER logging
+                    db.disconnect() #  Disconnect AFTER logging
                     return jsonify({'success': True, 'file': file_data})
                 
                 # If we are here, success is False
@@ -1154,7 +1154,7 @@ def create_flask_app():
         file = request.files['file']
         gmail_id = request.form.get('gmail_id')
         po_number = request.form.get('po_number', '')
-        amount = request.form.get('amount', '0') # 👈 Capture Amount
+        amount = request.form.get('amount', '0') #  Capture Amount
 
         # --- Auto-Extraction Logic if amount is empty ---
         extracted_amount = 0.0
@@ -1169,7 +1169,7 @@ def create_flask_app():
                # Parse & Extract
                extraction = extract_grand_total(temp_path)
                extracted_amount = extraction.get('amount', 0.0)
-               logger.info(f"🤖 Extracted CPO Amount: {extracted_amount} from {file.filename}")
+               logger.info(f" Extracted CPO Amount: {extracted_amount} from {file.filename}")
                
                # Reset file pointer for upload
                file.seek(0) 
@@ -1212,7 +1212,7 @@ def create_flask_app():
         if db.connect():
             success, error_msg = db.add_cpo_file(gmail_id, file_data)
             if success:
-                # ✅ Log Activity
+                #   Log Activity
                 try:
                     # 1. Log Upload
                     db.add_activity_log(
@@ -1232,7 +1232,7 @@ def create_flask_app():
                 except Exception as log_err:
                     logger.error(f"Logging failed: {log_err}")
 
-                db.disconnect() # 👈 Disconnect AFTER logging
+                db.disconnect() #  Disconnect AFTER logging
                 return jsonify({'success': True, 'file': file_data})
             
             db.disconnect()
@@ -1268,7 +1268,7 @@ def create_flask_app():
             if db.connect():
                 success = db.add_internal_note(gmail_id, note_data)
                 if success:
-                    # ✅ Log Activity
+                    #   Log Activity
                     try:
                         db.add_activity_log(
                             gmail_id, 
@@ -1280,7 +1280,7 @@ def create_flask_app():
                     except Exception as log_err:
                         logger.error(f"Logging failed: {log_err}")
                     
-                    db.disconnect() # 👈 Disconnect AFTER logging
+                    db.disconnect() #  Disconnect AFTER logging
                     return jsonify({'success': True, 'note': note_data})
             
             db.disconnect()
@@ -1308,7 +1308,7 @@ def create_flask_app():
                 
                 log_entry = None
                 if success:
-                    # ✅ FIX: Pass arguments individually, NOT as a dictionary
+                    #   FIX: Pass arguments individually, NOT as a dictionary
                     description = f"Assigned ticket to {assigned_to}" if assigned_to else "Unassigned ticket"
                     
                     log_entry = db.add_activity_log(

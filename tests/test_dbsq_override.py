@@ -19,7 +19,7 @@ class TestDBSQOverride(unittest.TestCase):
         self.assertFalse(contains_dbsq_code("Just a normal email"))
         self.assertFalse(contains_dbsq_code("DBSQ without number"))
         self.assertFalse(contains_dbsq_code("12345"))
-        print("✅ contains_dbsq_code passed")
+        print("  contains_dbsq_code passed")
 
     @patch('app.services.ai_email_extraction.OpenAI')
     @patch('app.services.ai_email_extraction.os.getenv')
@@ -47,7 +47,7 @@ class TestDBSQOverride(unittest.TestCase):
         
         self.assertEqual(result['status'], "VALID", "Should result in VALID due to override")
         self.assertEqual(result['Requirements'], [], "Should have empty requirements")
-        print("✅ DBSQ override passed")
+        print("  DBSQ override passed")
 
         # Test Case 2: Email WITHOUT DBSQ code -> Should remain NOT_VALID (IRRELEVANT)
         normal_email = "This is a junk email."
@@ -55,7 +55,7 @@ class TestDBSQOverride(unittest.TestCase):
         result_normal = extract_hardware_quotation_details(normal_email)
         
         self.assertEqual(result_normal['status'], "NOT_VALID", "Should remain NOT_VALID")
-        print("✅ Normal flow passed")
+        print("  Normal flow passed")
 
 if __name__ == '__main__':
     unittest.main()

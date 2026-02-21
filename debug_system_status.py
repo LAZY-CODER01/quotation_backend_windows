@@ -15,21 +15,21 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def debug_system():
-    print("🕵️‍♂️ Starting Deep System Debug...")
+    print("️‍♂️ Starting Deep System Debug...")
 
     # 1. Check DB Connection and Token
     print("\n1️⃣ Checking Database & Token...")
     db = DuckDBService()
     if not db.connect():
-        print("   ❌ DB Connection Failed")
+        print("     DB Connection Failed")
         return
     
     token_json = db.get_company_token()
     if not token_json:
-        print("   ❌ No Company Token found in DB.")
+        print("     No Company Token found in DB.")
         return # Cannot proceed
     else:
-        print("   ✅ Company Token exists.")
+        print("     Company Token exists.")
 
     db.disconnect()
 
@@ -39,17 +39,17 @@ def debug_system():
     
     try:
         gmail.authenticate_from_info(json.loads(token_json))
-        print(f"   ✅ Authenticated as: {gmail.service.users().getProfile(userId='me').execute().get('emailAddress')}")
+        print(f"     Authenticated as: {gmail.service.users().getProfile(userId='me').execute().get('emailAddress')}")
         
         # 3. Check Pending Emails (Standard Logic)
         print("\n3️⃣ Checking Standard 'Pending' Logic...")
         emails = gmail._check_for_new_emails()
-        print(f"   🔎 _check_for_new_emails found {len(emails)} pending emails.")
+        print(f"    _check_for_new_emails found {len(emails)} pending emails.")
         
         # ALSO Check Reprocess Logic
         print("\n3️⃣.5️⃣ Checking 'Reprocess' Logic...")
         reprocess_emails = gmail._check_for_reprocess_emails()
-        print(f"   🔎 _check_for_reprocess_emails found {len(reprocess_emails)} pending emails.")
+        print(f"    _check_for_reprocess_emails found {len(reprocess_emails)} pending emails.")
         emails.extend(reprocess_emails)
         
         for e in emails:
@@ -63,9 +63,9 @@ def debug_system():
             try:
                 print(f"   ▶️ Processing {target_email['gmail_id']}...")
                 gmail._process_single_email(target_email, db_proc)
-                print("   ✅ _process_single_email completed.")
+                print("     _process_single_email completed.")
             except Exception as pe:
-                print(f"   ❌ Error processing email: {pe}")
+                print(f"     Error processing email: {pe}")
                 import traceback
                 traceback.print_exc()
             finally:
@@ -76,7 +76,7 @@ def debug_system():
         results = gmail.service.users().messages().list(userId='me', q='in:inbox', maxResults=5).execute()
         messages = results.get('messages', [])
         
-        print(f"   🔎 'in:inbox' found {len(messages)} messages.")
+        print(f"    'in:inbox' found {len(messages)} messages.")
         
         for m in messages:
             msg = gmail.service.users().messages().get(userId='me', id=m['id'], format='minimal').execute()
@@ -87,7 +87,7 @@ def debug_system():
             print(f"        Snippet: {snippet}...")
             
     except Exception as e:
-        print(f"   ❌ Gmail Error: {e}")
+        print(f"     Gmail Error: {e}")
 
 if __name__ == "__main__":
     debug_system()

@@ -29,15 +29,15 @@ class DuckDBService:
         self.token = os.getenv('MOTHERDUCK_TOKEN')
         
         if self.token:
-            # ✅ Connect to MotherDuck Cloud
+            #   Connect to MotherDuck Cloud
             self.db_path = f'md:snapquote_db?motherduck_token={self.token}'
             self.is_cloud = True
-            logger.info("🔌 Configured for MotherDuck Cloud Database")
+            logger.info(" Configured for MotherDuck Cloud Database")
         else:
             # ⚠️ Fallback for local development
             self.db_path = 'local_dev.duckdb'
             self.is_cloud = False
-            logger.warning("⚠️ MOTHERDUCK_TOKEN not found. Using local file 'local_dev.duckdb'")
+            logger.warning(" MOTHERDUCK_TOKEN not found. Using local file 'local_dev.duckdb'")
             
         self.connection = None
 
@@ -48,7 +48,7 @@ class DuckDBService:
             self.create_table() 
             return True
         except Exception as e:
-            logger.error(f"❌ Database connection error: {str(e)}")
+            logger.error(f" Database connection error: {str(e)}")
             return False
 
     def disconnect(self):
@@ -139,12 +139,12 @@ class DuckDBService:
                     );
                 """)
 
-                logger.info("✅ Database tables initialized (Emails, Tokens, Users, Quotations, CPO)")
+                logger.info("Database tables initialized (Emails, Tokens, Users, Quotations, CPO)")
             except Exception as e:
-                logger.error(f"❌ Table creation error: {str(e)}")
+                logger.error(f"Table creation error: {str(e)}")
                 return False
 
-        # ✅ Run ALTER TABLE migrations OUTSIDE the schema lock so they don't
+        #   Run ALTER TABLE migrations OUTSIDE the schema lock so they don't
         # cause write-write conflicts with other threads' CREATE TABLE statements.
         self._ensure_column_exists("users", "employee_code", "VARCHAR")
         self._ensure_column_exists("email_extractions", "company_name", "VARCHAR")
@@ -156,13 +156,13 @@ class DuckDBService:
             self.connection.execute(f"SELECT {column} FROM {table} LIMIT 1")
         except Exception:
             try:
-                logger.info(f"🛠️ Column '{column}' missing in {table}. Adding it now...")
+                logger.info(f"️ Column '{column}' missing in {table}. Adding it now...")
                 self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {data_type}")
             except Exception as e:
                 # Silently ignore write-write conflicts (another worker already added it)
                 err_str = str(e)
                 if 'write-write conflict' in err_str or 'already exists' in err_str.lower():
-                    logger.warning(f"⚠️ Skipping ALTER for '{column}' on '{table}': {err_str}")
+                    logger.warning(f" Skipping ALTER for '{column}' on '{table}': {err_str}")
                 else:
                     logger.error(f"Failed to add column {column} to {table}: {e}")
 
@@ -217,7 +217,7 @@ class DuckDBService:
             priority = 'URGENT' if any(x in email_data.get('subject', '').lower() for x in ['urgent', 'asap']) else 'NORMAL'
 
             # -----------------------------------------------------------
-            # 🤖 AUTO-ASSIGNMENT LOGIC
+            #  AUTO-ASSIGNMENT LOGIC
             # -----------------------------------------------------------
             assigned_to_user = None
             body_text = email_data.get('body_text', '')
@@ -250,7 +250,7 @@ class DuckDBService:
                     
                     if user_res:
                         assigned_to_user = user_res[0]
-                        logger.info(f"🤖 Auto-assigned ticket {ticket_number} to {assigned_to_user} (Found EMP code: {full_code_str})")
+                        logger.info(f" Auto-assigned ticket {ticket_number} to {assigned_to_user} (Found EMP code: {full_code_str})")
 
             # Extract metadata from AI result
             extracted_company = extraction_result.get('company_name', '')
@@ -370,7 +370,7 @@ class DuckDBService:
 
     def get_all_extractions(self, limit=1000, status_filter=None, user_role='user', username=None, days=None, before_date=None, since=None, start_date=None, end_date=None):
         try:
-            # ✅ Added quotation_files and quotation_amount to the list
+            #   Added quotation_files and quotation_amount to the list
             cols = """
                 id, gmail_id, ticket_number, ticket_status, ticket_priority, 
                 quotation_files, cpo_files, quotation_amount,
@@ -393,7 +393,7 @@ class DuckDBService:
 
             # 2. Date Range Filtering (Only if not doing a pure delta sync)
             else:
-                # ✅ Explicit Date Range (New Feature)
+                #   Explicit Date Range (New Feature)
                 if start_date and end_date:
                     query += " AND received_at >= ? AND received_at <= ?"
                     params.append(start_date)
@@ -415,7 +415,7 @@ class DuckDBService:
                 query += " AND ticket_status = ?"
                 params.append(status_filter)
             
-            # ✅ RBAC: Users only see assigned tickets (Unassigned tickets hidden)
+            #   RBAC: Users only see assigned tickets (Unassigned tickets hidden)
             if user_role != 'ADMIN':
                 query += " AND assigned_to = ?"
                 params.append(username) # Current User
@@ -444,7 +444,7 @@ class DuckDBService:
                     ticket_number = item.get('ticket_number')
                     if ticket_number:
                         # Fetch Quotations
-                        # ✅ FIX: Fetch file_name/file_url and alias to name/url for frontend compatibility
+                        #   FIX: Fetch file_name/file_url and alias to name/url for frontend compatibility
                         q_files = self.connection.execute("""
                             SELECT id, file_name, file_url, amount, uploaded_at, reference_id 
                             FROM quotations WHERE ticket_number = ?
@@ -483,7 +483,7 @@ class DuckDBService:
                         item['quotation_files'] = []
                         item['cpo_files'] = []
                 except Exception as e:
-                    # ✅ FIX: Log specific error but don't crash
+                    #   FIX: Log specific error but don't crash
                     logger.warning(f"Failed to fetch linked files for {ticket_number}: {e}")
                     item['quotation_files'] = []
                     item['cpo_files'] = []
@@ -496,7 +496,7 @@ class DuckDBService:
 
     def get_extraction(self, gmail_id):
         try:
-            # ✅ FIX: Added quotation_files and quotation_amount here too
+            #   FIX: Added quotation_files and quotation_amount here too
             cols = """
                 id, gmail_id, ticket_number, ticket_status, ticket_priority, 
                 quotation_files, quotation_amount,
@@ -609,7 +609,7 @@ class DuckDBService:
 
     def get_user_by_username(self, username):
         try:
-            # ✅ Fetch employee_code as well
+            #   Fetch employee_code as well
             q = "SELECT id, username, password_hash, role, employee_code FROM users WHERE username = ?"
             row = self.connection.execute(q, [username]).fetchone()
             if not row: return None
@@ -862,7 +862,7 @@ class DuckDBService:
             
             ticket_number = row[0]
 
-            # ✅ FIX: Handle missing ticket number by generating one
+            #   FIX: Handle missing ticket number by generating one
             if not ticket_number:
                 logger.info(f"Ticket number missing for {gmail_id}. Generating new one...")
                 ticket_number = self._generate_next_ticket_number()
@@ -874,7 +874,7 @@ class DuckDBService:
             reference_id = self._generate_next_id("DBQ", "quotations", "reference_id")
 
             # 3. Insert into quotations table
-            # ✅ FIX: Use file_name, file_url
+            #   FIX: Use file_name, file_url
             self.connection.execute("""
                 INSERT INTO quotations (id, ticket_number, reference_id, file_name, file_url, amount, uploaded_at)
                 VALUES (nextval('id_sequence'), ?, ?, ?, ?, ?, ?)
@@ -912,7 +912,7 @@ class DuckDBService:
                 
             ticket_number = row[0]
             
-            # ✅ FIX: Handle missing ticket number by generating one
+            #   FIX: Handle missing ticket number by generating one
             if not ticket_number:
                 logger.info(f"Ticket number missing for {gmail_id}. Generating new one...")
                 ticket_number = self._generate_next_ticket_number()
@@ -922,7 +922,7 @@ class DuckDBService:
             reference_id = self._generate_next_id("PO", "cpo_orders", "reference_id")
 
             # 3. Insert into cpo_orders table
-            # ✅ FIX: Use file_name, file_url
+            #   FIX: Use file_name, file_url
             self.connection.execute("""
                 INSERT INTO cpo_orders (id, ticket_number, reference_id, file_name, file_url, amount, uploaded_at)
                 VALUES (nextval('id_sequence'), ?, ?, ?, ?, ?, ?)

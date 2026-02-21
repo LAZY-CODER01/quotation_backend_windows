@@ -30,9 +30,9 @@ def test_extraction():
         result = extract_price_from_content(case['content'])
         print(f"Result: {result}")
         if result['amount'] == case['expected_amount']:
-            print("✅ Success")
+            print("  Success")
         else:
-            print(f"❌ Failed: Expected {case['expected_amount']}, got {result['amount']}")
+            print(f"  Failed: Expected {case['expected_amount']}, got {result['amount']}")
         print("-" * 20)
 
 if __name__ == "__main__":

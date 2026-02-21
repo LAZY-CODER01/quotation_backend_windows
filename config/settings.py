@@ -100,6 +100,11 @@ class Config:
         if missing_items:
             raise ValueError(f"Missing required configuration: {', '.join(missing_items)}")
 
+        # Validate secret key length securely
+        secret_key = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production'
+        if len(secret_key) < 32:
+            raise ValueError("SECRET_KEY must be at least 32 characters long for JWT security.")
+
 class DevelopmentConfig(Config):
     """
     Development environment configuration.

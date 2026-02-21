@@ -11,18 +11,8 @@ import sys
 import io
 
 # Force stdout and stderr to UTF-8 to prevent UnicodeEncodeError on Windows
-try:
-    if hasattr(sys.stdout, 'reconfigure'):
-        sys.stdout.reconfigure(encoding='utf-8')
-    elif hasattr(sys.stdout, 'buffer'):
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    
-    if hasattr(sys.stderr, 'reconfigure'):
-        sys.stderr.reconfigure(encoding='utf-8')
-    elif hasattr(sys.stderr, 'buffer'):
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-except Exception:
-    pass
+# Removed sys.stdout and sys.stderr manual reconfiguration for UTF-8
+# because Windows Service / NSSM handles this differently and it causes UnicodeEncodeError.
 
 import threading
 import os

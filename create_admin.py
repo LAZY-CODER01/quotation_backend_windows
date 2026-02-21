@@ -3,7 +3,7 @@ from werkzeug.security import generate_password_hash
 from app.services.duckdb_service import DuckDBService
 
 def create_admin_user():
-    print("👤 Creating Admin User...")
+    print(" Creating Admin User...")
 
     # 1️⃣ Read from environment first (Docker-safe)
     username = os.getenv("ADMIN_USERNAME", "admin")
@@ -14,16 +14,16 @@ def create_admin_user():
         try:
             password = input("Enter admin password: ")
         except EOFError:
-            print("❌ Password not provided and input not available.")
+            print("  Password not provided and input not available.")
             return
 
     if not password:
-        print("❌ Password cannot be empty.")
+        print("  Password cannot be empty.")
         return
 
     db = DuckDBService()
     if not db.connect():
-        print("❌ Failed to connect to database.")
+        print("  Failed to connect to database.")
         return
 
     db.create_table()  # Ensure tables exist
@@ -38,11 +38,11 @@ def create_admin_user():
     user_id = db.create_user(username, password_hash, role="ADMIN")
 
     if user_id:
-        print(f"✅ Admin user created successfully!")
+        print(f"  Admin user created successfully!")
         print(f"   Username: {username}")
         print(f"   Role: ADMIN")
     else:
-        print("❌ Failed to create admin user.")
+        print("  Failed to create admin user.")
 
     db.disconnect()
 

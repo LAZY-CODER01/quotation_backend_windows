@@ -67,9 +67,9 @@ def test_webhook():
     print(f"Response Body: {response.data.decode('utf-8')}")
     
     if response.status_code == 200:
-        print("✅ Endpoint returned 200 OK")
+        print("  Endpoint returned 200 OK")
     else:
-        print("❌ Endpoint returned error")
+        print("  Endpoint returned error")
         
     # Verify processing triggered
     # Logic in endpoint spawns a thread. We need to wait a bit or just check if it was called?
@@ -84,9 +84,9 @@ def test_webhook():
     time.sleep(1) # Wait for thread to run
     
     if mock_service.check_for_new_emails.called:
-        print("✅ check_for_new_emails was called")
+        print("  check_for_new_emails was called")
     else:
-        print("❌ check_for_new_emails was NOT called")
+        print("  check_for_new_emails was NOT called")
         
 if __name__ == "__main__":
     test_webhook()

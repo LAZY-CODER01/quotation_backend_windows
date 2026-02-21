@@ -63,10 +63,10 @@ if __name__ == '__main__':
     try:
         test_session()
     except requests.exceptions.ConnectionError:
-        print("❌ Error: Could not connect to backend server.")
+        print("  Error: Could not connect to backend server.")
         print("   Make sure the backend is running on http://localhost:8000")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"  Error: {e}")
         import traceback
         traceback.print_exc()
 

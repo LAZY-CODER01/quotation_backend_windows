@@ -9,7 +9,7 @@ services:
     ports:
       - "8000:8000"
 
-    # ✅ LOAD .env PROPERLY
+    #   LOAD .env PROPERLY
     env_file:
       - .env
 

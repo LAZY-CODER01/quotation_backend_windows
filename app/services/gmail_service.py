@@ -168,7 +168,7 @@ class GmailService:
                         db.disconnect()
                 except Exception as e:
                     if "invalid_scope" in str(e):
-                        logger.error("❌ SCOPE MISMATCH: The stored token is missing required permissions (likely Google Drive). Please RE-AUTHENTICATE in the Admin Panel.")
+                        logger.error("  SCOPE MISMATCH: The stored token is missing required permissions (likely Google Drive). Please RE-AUTHENTICATE in the Admin Panel.")
                     else:
                         logger.error(f"Failed to refresh credentials: {str(e)}")
                     return False

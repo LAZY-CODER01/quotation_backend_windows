@@ -35,7 +35,7 @@ def setup_logging():
 def start_monitoring_loop(gmail_service):
     """Background thread to monitor Gmail inbox."""
     try:
-        logging.info(f"📧 Starting email monitoring (checking every {Config.EMAIL_CHECK_INTERVAL}s)")
+        logging.info(f" Starting email monitoring (checking every {Config.EMAIL_CHECK_INTERVAL}s)")
         gmail_service.start_monitoring(Config.EMAIL_CHECK_INTERVAL)
     except Exception as e:
         logging.error(f"Email monitoring error: {str(e)}")
@@ -43,18 +43,18 @@ def start_monitoring_loop(gmail_service):
 def initialize_database():
     """Initialize DuckDB database on startup."""
     try:
-        print("🗄️ Initializing DuckDB database...")
+        print("️ Initializing DuckDB database...")
         db_service = DuckDBService()
         if db_service.connect():
             if db_service.create_table():
-                print("✅ DuckDB database ready")
+                print("  DuckDB database ready")
             else:
                 print("⚠️ Warning: Could not create database table")
             db_service.disconnect()
         else:
             print("⚠️ Warning: Could not connect to database")
     except Exception as e:
-        print(f"❌ Database initialization error: {str(e)}")
+        print(f"  Database initialization error: {str(e)}")
         logging.error(f"Database initialization error: {str(e)}")
 
 def check_and_start_monitoring_for_existing_users():
@@ -62,15 +62,15 @@ def check_and_start_monitoring_for_existing_users():
     try:
         token_dir = Config.GMAIL_TOKEN_DIRECTORY
         if not os.path.exists(token_dir):
-            print("💡 No token directory found. Users need to login via frontend.")
+            print(" No token directory found. Users need to login via frontend.")
             return
 
         token_files = [f for f in os.listdir(token_dir) if f.startswith('token_') and f.endswith('.json')]
         if not token_files:
-            print("💡 No authentication tokens found. Users need to login via frontend.")
+            print(" No authentication tokens found. Users need to login via frontend.")
             return
 
-        print(f"🔍 Found {len(token_files)} existing user token(s)...")
+        print(f" Found {len(token_files)} existing user token(s)...")
         from google.oauth2.credentials import Credentials
         from google.auth.transport.requests import Request
 
@@ -84,12 +84,12 @@ def check_and_start_monitoring_for_existing_users():
                 creds = Credentials.from_authorized_user_file(token_path, SCOPES)
 
                 if creds and creds.expired and creds.refresh_token:
-                    print(f"🔄 Refreshing token for user {user_id[:8]}...")
+                    print(f" Refreshing token for user {user_id[:8]}...")
                     try:
                         creds.refresh(Request())
                         with open(token_path, 'w') as token:
                             token.write(creds.to_json())
-                        print(f"✅ Token refreshed for user {user_id[:8]}")
+                        print(f"  Token refreshed for user {user_id[:8]}")
                     except Exception as e:
                         print(f"⚠️ Failed to refresh token for user {user_id[:8]}: {str(e)}")
                         continue
@@ -110,7 +110,7 @@ def check_and_start_monitoring_for_existing_users():
                     )
                     monitoring_thread.start()
                     monitoring_active[user_id] = True
-                    print(f"✅ Email monitoring active for user {user_id[:8]}")
+                    print(f"  Email monitoring active for user {user_id[:8]}")
                 else:
                     print(f"⚠️ Invalid token for user {user_id[:8]}")
             except Exception as e:
@@ -119,7 +119,7 @@ def check_and_start_monitoring_for_existing_users():
 
         active_count = len([v for v in monitoring_active.values() if v])
         if active_count > 0:
-            print(f"📬 Email monitoring active for {active_count} user(s)")
+            print(f" Email monitoring active for {active_count} user(s)")
 
     except Exception as e:
         logging.error(f"Error checking authentication: {str(e)}")
@@ -308,7 +308,7 @@ def create_flask_app():
                     )
                     monitoring_thread.start()
                     monitoring_active[user_id] = True
-                    logger.info(f"📧 Email monitoring started for user {user_id}")
+                    logger.info(f" Email monitoring started for user {user_id}")
                 
                 # Clear OAuth state
                 session.pop('oauth_state', None)
@@ -563,7 +563,7 @@ def create_flask_app():
                 return jsonify({'error': 'Invalid filename'}), 400
             
             return send_file(
-                file_path,
+                os.path.abspath(file_path),
                 as_attachment=True,
                 download_name=filename,
                 mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -584,14 +584,14 @@ def create_flask_app():
     return app
 
 # --------------------- APP INITIALIZATION ---------------------
-print("🚀 Starting SnapQuote Gmail Monitor with API (Waitress mode)...")
+print(" Starting SnapQuote Gmail Monitor with API (Waitress mode)...")
 setup_logging()
 
 try:
     Config.validate_config()
-    print("✅ Configuration validated")
+    print("  Configuration validated")
 except ValueError as e:
-    print(f"❌ Configuration error: {e}")
+    print(f"  Configuration error: {e}")
     raise SystemExit(1)
 
 initialize_database()
@@ -599,7 +599,7 @@ check_and_start_monitoring_for_existing_users()
 
 # Create Flask app (to be imported by wsgi.py)
 app = create_flask_app()
-print("🌐 Flask app created successfully — ready for Waitress.")
+print(" Flask app created successfully — ready for Waitress.")
 
 # Only run Flask dev server if executed directly (not via waitress-serve)
 if __name__ == "__main__":

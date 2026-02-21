@@ -71,10 +71,9 @@ class ExcelGenerationService:
 
                 extraction_result = extraction_data.get("extraction_result", {})
 
-                # Use EnsureDispatch (early binding) so that Characters().Font
-                # is properly resolved via the Excel type library.
+                # Use DispatchEx to ensure a new independent Excel process thread is spawned
                 # Thread safety is guaranteed by excel_lock above.
-                excel = gencache.EnsureDispatch("Excel.Application")
+                excel = win32com.client.DispatchEx("Excel.Application")
                 excel.Visible = False
                 excel.DisplayAlerts = False
                 excel.ScreenUpdating = False
@@ -95,8 +94,10 @@ class ExcelGenerationService:
                     pass
 
                 wb.Save()
-                wb.Close(False)
+                wb.Close(SaveChanges=True)
                 excel.Quit()
+                del wb
+                del excel
 
                 return output_path
 
@@ -175,15 +176,15 @@ class ExcelGenerationService:
         color_light_blue = rgb_to_ole("DDEBF7")
 
         # --- COLUMN WIDTHS (match screenshot) ---
-        ws.Columns("A:A").ColumnWidth = 6
-        ws.Columns("B:B").ColumnWidth = 38
-        ws.Columns("C:C").ColumnWidth = 20
-        ws.Columns("D:D").ColumnWidth = 22
-        ws.Columns("E:E").ColumnWidth = 22
-        ws.Columns("F:F").ColumnWidth = 8
-        ws.Columns("G:G").ColumnWidth = 8
-        ws.Columns("H:H").ColumnWidth = 16
-        ws.Columns("I:I").ColumnWidth = 16
+        ws.Columns(1).ColumnWidth = 6
+        ws.Columns(2).ColumnWidth = 38
+        ws.Columns(3).ColumnWidth = 20
+        ws.Columns(4).ColumnWidth = 22
+        ws.Columns(5).ColumnWidth = 22
+        ws.Columns(6).ColumnWidth = 8
+        ws.Columns(7).ColumnWidth = 8
+        ws.Columns(8).ColumnWidth = 16
+        ws.Columns(9).ColumnWidth = 16
 
         START_ROW = 12
         actual_rows = 0
