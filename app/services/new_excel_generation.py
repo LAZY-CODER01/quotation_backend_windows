@@ -544,11 +544,6 @@ class ExcelGenerationService:
             # --- TERMS & CONDITIONS ---
             TERMS_ROW = NOTE_ROW + 1 
 
-            try:
-                ws.HPageBreaks.Add(Before=ws.Rows(TERMS_ROW))
-            except Exception as e:
-                logger.warning(f"Failed to add page break before TERMS: {e}")
-
             ws.Range(ws.Cells(TERMS_ROW, 1), ws.Cells(TERMS_ROW, 9)).Merge()
             t_cell = ws.Cells(TERMS_ROW, 1)
             t_cell.Value = "TERMS:"
