@@ -3,8 +3,12 @@ import io
 import logging
 import pytesseract
 from pdf2image import convert_from_bytes
+import sys
 
 logger = logging.getLogger(__name__)
+
+if sys.platform == 'win32':
+    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 def pdf_to_markdown(pdf_content: bytes) -> str:
     """

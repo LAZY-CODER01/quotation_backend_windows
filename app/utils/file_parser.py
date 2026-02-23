@@ -28,6 +28,9 @@ try:
     from pdf2image import convert_from_path
     import pytesseract
     from PIL import Image
+    import sys
+    if sys.platform == 'win32':
+        pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 except ImportError:
     convert_from_path = None
     pytesseract = None
