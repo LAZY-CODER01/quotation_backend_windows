@@ -9,7 +9,13 @@ import logging
 import pytesseract
 from PIL import Image
 
+import sys
+
 logger = logging.getLogger(__name__)
+
+# Add explicit path for Tesseract OCR on Windows if not in PATH
+if sys.platform == 'win32':
+    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 def image_to_markdown(image_content: bytes) -> str:
     """
