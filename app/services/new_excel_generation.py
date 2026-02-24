@@ -218,6 +218,9 @@ class ExcelGenerationService:
                     if selected_match.get("price") is not None:
                         price_val = self._to_float(selected_match.get("price"))
                         
+                desc_text = desc_text.replace('\r\n', '\n')
+                offering_text = offering_text.replace('\r\n', '\n')
+
                 # Col 1: SL NO
                 cell_sl = ws.Cells(row, 1)
                 cell_sl.Value = idx + 1
@@ -227,7 +230,7 @@ class ExcelGenerationService:
                 # Build the combined text string
                 label1 = "Your Requirement:"
                 label2 = "We OFFER:"
-                full_desc = f"{label1}\n{desc_text}\n\n{label2}\n{offering_text}"
+                full_desc = f"{label1}\n{desc_text}\n\n{label2}\n{offering_text} "
                 cell_desc = ws.Cells(row, 2)
                 cell_desc.Value = full_desc
 
@@ -236,6 +239,7 @@ class ExcelGenerationService:
                 cell_desc.Font.Size = 11
                 cell_desc.Font.Bold = False
                 cell_desc.Font.Color = color_black
+                cell_desc.Font.Underline = -4142
 
                 total_len = len(full_desc)
 
@@ -279,18 +283,20 @@ class ExcelGenerationService:
                         ch_desc.Bold = True
                         ch_desc.Color = color_black
                         ch_desc.Size = 11
+                        ch_desc.Underline = -4142
                 except Exception as fmt_err:
                     logger.warning(f"Rich text desc body row {row}: {fmt_err}")
 
                 # offering_text starts just after label2 + \n
                 offer_start = lbl2_start + lbl2_len + 1
-                offer_len = len(offering_text)
+                offer_len = len(offering_text) + 1 # include the trailing space we added
                 try:
                     if offer_len > 0 and offer_start + offer_len - 1 <= total_len:
                         ch_offer = cell_desc.GetCharacters(offer_start, offer_len).Font
                         ch_offer.Bold = True
                         ch_offer.Color = color_black
                         ch_offer.Size = 11
+                        ch_offer.Underline = -4142
                 except Exception as fmt_err:
                     logger.warning(f"Rich text offer body row {row}: {fmt_err}")
 
