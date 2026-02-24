@@ -230,75 +230,103 @@ class ExcelGenerationService:
                 # Build the combined text string
                 label1 = "Your Requirement:"
                 label2 = "We OFFER:"
-                full_desc = f"{label1}\n{desc_text}\n\n{label2}\n{offering_text} "
+                # If backend provides offering data, use it; otherwise put "Data" as
+                # a black-bold placeholder the user can erase and type over (Excel
+                # will carry the black-bold formatting forward).
+                offer_body = offering_text.strip() if offering_text.strip() else "Data"
+                full_desc = f"{label1}\n{desc_text}\n\n{label2}\n{offer_body} "
                 cell_desc = ws.Cells(row, 2)
                 cell_desc.Value = full_desc
 
-                # Step 1: Set whole-cell default font (body text inherits this)
-                cell_desc.Font.Name = "Calibri"
-                cell_desc.Font.Size = 11
-                cell_desc.Font.Bold = False
-                cell_desc.Font.Color = color_black
-                cell_desc.Font.Underline = -4142
-
                 total_len = len(full_desc)
 
-                # Step 2: Format "Your Requirement:" — purple, bold, underline
-                # Use GetCharacters() — works reliably with win32com (unlike Characters())
-                lbl1_start = 1
-                lbl1_len = len(label1)
-                try:
-                    if lbl1_len > 0 and lbl1_start + lbl1_len - 1 <= total_len:
-                        ch1 = cell_desc.GetCharacters(lbl1_start, lbl1_len).Font
-                        ch1.Name = "Calibri"
-                        ch1.Size = 13
-                        ch1.Bold = True
-                        ch1.Underline = 2   # xlUnderlineStyleSingle
-                        ch1.Color = color_purple
-                except Exception as fmt_err:
-                    logger.warning(f"Rich text label1 row {row}: {fmt_err}")
+                # ==== RICH TEXT FORMATTING ====
+                # Excel COM bleeds GetCharacters format FORWARD to subsequent chars.
+                # Fix: format strictly in sequential order, covering EVERY character,
+                # with NO overlapping ranges. Each section is formatted immediately
+                # after the previous one so nothing inherits a wrong color.
 
-                # Step 3: Format "We OFFER:" — red, bold, underline
-                # Starts just after: label1 + \n + desc_text + \n\n  (all 1-indexed)
-                lbl2_start = len(label1) + 1 + len(desc_text) + 2 + 1
-                lbl2_len = len(label2)
-                try:
-                    if lbl2_len > 0 and lbl2_start + lbl2_len - 1 <= total_len:
-                        ch2 = cell_desc.GetCharacters(lbl2_start, lbl2_len).Font
-                        ch2.Name = "Calibri"
-                        ch2.Size = 13
-                        ch2.Bold = True
-                        ch2.Underline = 2   # xlUnderlineStyleSingle
-                        ch2.Color = color_red
-                except Exception as fmt_err:
-                    logger.warning(f"Rich text label2 row {row}: {fmt_err}")
+                # Section positions (1-indexed for GetCharacters):
+                # Section A: "Your Requirement:"  → purple, bold, underline, 13pt
+                # Section B: "\n" + desc_text      → black, bold, 11pt, no underline
+                # Section C: "\n\n"                → black, bold, 11pt, no underline
+                # Section D: "We OFFER:"           → red, bold, underline, 13pt
+                # Section E: "\n" + offering_text + " " → black, bold, 11pt, no underline
 
-                # Step 4: Bold the body text under each label
-                # desc_text starts just after label1 + \n (1-indexed)
-                desc_start = len(label1) + 1 + 1   # after "Your Requirement:\n"
-                desc_len = len(desc_text)
-                try:
-                    if desc_len > 0 and desc_start + desc_len - 1 <= total_len:
-                        ch_desc = cell_desc.GetCharacters(desc_start, desc_len).Font
-                        ch_desc.Bold = True
-                        ch_desc.Color = color_black
-                        ch_desc.Size = 11
-                        ch_desc.Underline = -4142
-                except Exception as fmt_err:
-                    logger.warning(f"Rich text desc body row {row}: {fmt_err}")
+                secA_start = 1
+                secA_len   = len(label1)                                    # "Your Requirement:"
 
-                # offering_text starts just after label2 + \n
-                offer_start = lbl2_start + lbl2_len + 1
-                offer_len = len(offering_text) + 1 # include the trailing space we added
+                secB_start = secA_start + secA_len                          # \n after label1
+                secB_len   = 1 + len(desc_text)                             # \n + desc_text
+
+                secC_start = secB_start + secB_len                          # \n\n separator
+                secC_len   = 2
+
+                secD_start = secC_start + secC_len                          # "We OFFER:"
+                secD_len   = len(label2)
+
+                secE_start = secD_start + secD_len                          # \n + offering_text + " "
+                secE_len   = total_len - secE_start + 1                     # everything remaining
+
+                # --- A: "Your Requirement:" (purple, bold, underline, 13pt) ---
                 try:
-                    if offer_len > 0 and offer_start + offer_len - 1 <= total_len:
-                        ch_offer = cell_desc.GetCharacters(offer_start, offer_len).Font
-                        ch_offer.Bold = True
-                        ch_offer.Color = color_black
-                        ch_offer.Size = 11
-                        ch_offer.Underline = -4142
-                except Exception as fmt_err:
-                    logger.warning(f"Rich text offer body row {row}: {fmt_err}")
+                    if secA_len > 0 and secA_start + secA_len - 1 <= total_len:
+                        fA = cell_desc.GetCharacters(secA_start, secA_len).Font
+                        fA.Name = "Calibri"
+                        fA.Size = 13
+                        fA.Bold = True
+                        fA.Underline = 2
+                        fA.Color = color_purple
+                except Exception as e:
+                    logger.warning(f"Rich text secA row {row}: {e}")
+
+                # --- B: body under "Your Requirement:" (black, bold, 11pt) ---
+                try:
+                    if secB_len > 0 and secB_start + secB_len - 1 <= total_len:
+                        fB = cell_desc.GetCharacters(secB_start, secB_len).Font
+                        fB.Name = "Calibri"
+                        fB.Size = 11
+                        fB.Bold = True
+                        fB.Color = color_black
+                        fB.Underline = -4142
+                except Exception as e:
+                    logger.warning(f"Rich text secB row {row}: {e}")
+
+                # --- C: separator newlines (black, bold, 11pt) ---
+                try:
+                    if secC_len > 0 and secC_start + secC_len - 1 <= total_len:
+                        fC = cell_desc.GetCharacters(secC_start, secC_len).Font
+                        fC.Name = "Calibri"
+                        fC.Size = 11
+                        fC.Bold = True
+                        fC.Color = color_black
+                        fC.Underline = -4142
+                except Exception as e:
+                    logger.warning(f"Rich text secC row {row}: {e}")
+
+                # --- D: "We OFFER:" (red, bold, underline, 13pt) ---
+                try:
+                    if secD_len > 0 and secD_start + secD_len - 1 <= total_len:
+                        fD = cell_desc.GetCharacters(secD_start, secD_len).Font
+                        fD.Name = "Calibri"
+                        fD.Size = 13
+                        fD.Bold = True
+                        fD.Underline = 2
+                        fD.Color = color_red
+                except Exception as e:
+                    logger.warning(f"Rich text secD row {row}: {e}")
+
+                # --- E: body under "We OFFER:" (black, bold, 11pt) — MUST come last ---
+                try:
+                    if secE_len > 0 and secE_start + secE_len - 1 <= total_len:
+                        fE = cell_desc.GetCharacters(secE_start, secE_len).Font
+                        fE.Name = "Calibri"
+                        fE.Size = 11
+                        fE.Bold = True
+                        fE.Color = color_black
+                        fE.Underline = -4142
+                except Exception as e:
+                    logger.warning(f"Rich text secE row {row}: {e}")
 
                 # Col 3: BRAND (bold)
                 cell_brand = ws.Cells(row, 3)
