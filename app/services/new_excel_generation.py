@@ -230,10 +230,10 @@ class ExcelGenerationService:
                 # Build the combined text string
                 label1 = "Your Requirement:"
                 label2 = "We OFFER:"
-                # If backend provides offering data, use it; otherwise put "Data" as
-                # a black-bold placeholder the user can erase and type over (Excel
+                # If backend provides offering data, use it; otherwise put a space " " as
+                # a black-bold placeholder the user can type over (Excel
                 # will carry the black-bold formatting forward).
-                offer_body = offering_text.strip() if offering_text.strip() else "Data"
+                offer_body = offering_text.strip() if offering_text.strip() else " "
                 full_desc = f"{label1}\n{desc_text}\n\n{label2}\n{offer_body} "
                 cell_desc = ws.Cells(row, 2)
                 cell_desc.Value = full_desc
