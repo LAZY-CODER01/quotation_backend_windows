@@ -301,6 +301,32 @@ if __name__ == "__main__":
     print(json.dumps(invalid_result, indent=2))
 
 
+def normalize_amount(value: str) -> float:
+    """
+    Safely normalize currency values like:
+    1,000
+    1,000.00
+    1.000,00
+    AED 1,000.00
+    ₹ 25,50,000
+    """
+    import re
+    
+    value = str(value).strip()
+    value = re.sub(r"[^\d,.\-]", "", value)
+
+    # Handle European format (1.000,00)
+    if value.count(",") == 1 and value.count(".") >= 1 and value.find(",") > value.find("."):
+        value = value.replace(".", "").replace(",", ".")
+    else:
+        value = value.replace(",", "")
+
+    try:
+        return float(value)
+    except:
+        return 0.0
+
+
 def extract_price_from_content(content: str) -> dict:
     """
     Extract total price/amount from document content using AI.
@@ -327,7 +353,7 @@ def extract_price_from_content(content: str) -> dict:
 
     Return as JSON:
     {{
-      "amount": number (float, 0.0 if not found),
+      "amount": string (exact text of the amount as written in document, e.g. "1,000.00"),
       "currency": string (e.g. AED, USD),
       "confidence": float (0.0 to 1.0)
     }}
@@ -351,7 +377,8 @@ def extract_price_from_content(content: str) -> dict:
         data = json.loads(result_text)
         
         # Ensure correct types
-        amount = float(str(data.get("amount", 0)).replace(",", ""))
+        raw_amount = data.get("amount", "0")
+        amount = normalize_amount(raw_amount)
         return {
             "amount": amount,
             "currency": data.get("currency", "AED"),
