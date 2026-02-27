@@ -341,6 +341,39 @@ def create_flask_app():
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
+    @app.route('/api/admin/employee-analytics/<user_id>', methods=['GET', 'OPTIONS'])
+    @jwt_required(roles=['ADMIN'])
+    def get_employee_analytics_route(user_id):
+        """Get detailed analytics for a single employee."""
+        try:
+            start_date = request.args.get('start_date')
+            end_date = request.args.get('end_date')
+
+            db = DuckDBService()
+            if not db.connect():
+                return jsonify({"error": "Database connection failed"}), 500
+
+            # Look up username from user_id
+            user = db.get_user_by_id(user_id)
+            if not user:
+                db.disconnect()
+                return jsonify({"error": "User not found"}), 404
+
+            username = user.get('username')
+            result = db.get_single_employee_analytics(username, start_date, end_date)
+            db.disconnect()
+
+            return jsonify({
+                "success": True,
+                "kpis": result.get('kpis', {}),
+                "funnel": result.get('funnel', []),
+                "workload": result.get('workload', {}),
+                "tickets": result.get('tickets', []),
+            })
+        except Exception as e:
+            logger.error(f"Employee analytics error: {e}")
+            return jsonify({"error": str(e)}), 500
+
     @app.route('/api/admin/clients', methods=['GET', 'POST', 'OPTIONS'])
     @jwt_required(roles=['ADMIN'])
     def manage_clients():

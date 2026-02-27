@@ -1523,3 +1523,230 @@ class DuckDBService:
         except Exception as e:
             logger.error(f"Error fetching client stats: {e}")
             return []
+
+    # ------------------------------------------------------------------
+    # Employee Analytics (Single Employee Deep Dive)
+    # ------------------------------------------------------------------
+
+    def _safe_float(self, val):
+        """Convert a VARCHAR amount to float, stripping currency symbols and commas."""
+        if val is None:
+            return 0.0
+        try:
+            cleaned = re.sub(r'[^\d.\-]', '', str(val).replace(',', ''))
+            return float(cleaned) if cleaned else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+
+    def get_single_employee_analytics(self, username, start_date_str=None, end_date_str=None):
+        """
+        Returns KPIs, funnel, workload and ticket drilldown for a single employee.
+        """
+        try:
+            # --- Date filtering ---
+            start_date = parse_date_string(start_date_str) if start_date_str else None
+            end_date = parse_date_string(end_date_str) if end_date_str else None
+            if end_date:
+                end_date = end_date.replace(hour=23, minute=59, second=59)
+
+            now = get_uae_time()
+            if start_date and start_date.tzinfo is None and now.tzinfo:
+                start_date = start_date.replace(tzinfo=now.tzinfo)
+            if end_date and end_date.tzinfo is None and now.tzinfo:
+                end_date = end_date.replace(tzinfo=now.tzinfo)
+
+            # --- Fetch tickets for this employee ---
+            query = """
+                SELECT gmail_id, ticket_number, ticket_status, ticket_priority,
+                       quotation_amount, sender, company_name, subject,
+                       created_at, updated_at, received_at
+                FROM email_extractions
+                WHERE assigned_to = ?
+            """
+            params = [username]
+
+            if start_date:
+                query += " AND COALESCE(received_at, created_at) >= ?"
+                params.append(start_date)
+            if end_date:
+                query += " AND COALESCE(received_at, created_at) <= ?"
+                params.append(end_date)
+
+            query += " ORDER BY created_at DESC"
+            rows = self.connection.execute(query, params).fetchall()
+
+            # --- Build ticket list with joined file data ---
+            tickets = []
+            total = 0
+            sent_count = 0
+            confirmed_count = 0
+            closed_count = 0
+            total_quote_value = 0.0
+            total_order_value = 0.0
+            total_line_items = 0
+
+            for row in rows:
+                gmail_id, ticket_number, status_raw, priority, quot_amt, \
+                    sender, company, subject, created_at, updated_at, received_at = row
+
+                status = (status_raw or 'INBOX').upper()
+                total += 1
+
+                if status == 'SENT':
+                    sent_count += 1
+                elif status == 'ORDER_CONFIRMED':
+                    confirmed_count += 1
+                elif status in ('CLOSED', 'ORDER_COMPLETED'):
+                    closed_count += 1
+
+                # Quotation files for this ticket
+                quote_ref = '—'
+                quote_amount = '—'
+                quote_amount_num = 0.0
+                line_items = 0
+                if ticket_number:
+                    try:
+                        q_rows = self.connection.execute(
+                            "SELECT reference_id, amount FROM quotations WHERE ticket_number = ?",
+                            [ticket_number]
+                        ).fetchall()
+                        if q_rows:
+                            quote_ref = q_rows[0][0] or '—'
+                            amounts = [self._safe_float(q[1]) for q in q_rows]
+                            quote_amount_num = sum(amounts)
+                            if quote_amount_num > 0:
+                                quote_amount = f"AED {quote_amount_num:,.0f}"
+                            line_items = len(q_rows)
+                    except Exception:
+                        pass
+
+                # CPO files for this ticket
+                cpo_ref = '—'
+                cpo_amount = '—'
+                cpo_amount_num = 0.0
+                if ticket_number:
+                    try:
+                        c_rows = self.connection.execute(
+                            "SELECT reference_id, amount FROM cpo_orders WHERE ticket_number = ?",
+                            [ticket_number]
+                        ).fetchall()
+                        if c_rows:
+                            cpo_ref = c_rows[0][0] or '—'
+                            amounts = [self._safe_float(c[1]) for c in c_rows]
+                            cpo_amount_num = sum(amounts)
+                            if cpo_amount_num > 0:
+                                cpo_amount = f"AED {cpo_amount_num:,.0f}"
+                    except Exception:
+                        pass
+
+                # Also consider quotation_amount on the ticket itself
+                ticket_quot_amt = self._safe_float(quot_amt)
+                # Use quotation files amount if available, otherwise fall back to ticket amount
+                effective_quote_val = quote_amount_num if quote_amount_num > 0 else ticket_quot_amt
+                total_quote_value += effective_quote_val
+                total_order_value += cpo_amount_num
+                total_line_items += line_items
+
+                # Status color mapping
+                status_color_map = {
+                    'INBOX': 'blue', 'OPEN': 'blue',
+                    'SENT': 'yellow',
+                    'ORDER_CONFIRMED': 'amber',
+                    'CLOSED': 'emerald', 'ORDER_COMPLETED': 'emerald',
+                }
+
+                def fmt_date(d):
+                    if d is None:
+                        return '—'
+                    try:
+                        if isinstance(d, datetime):
+                            return d.strftime('%d/%m/%Y')
+                        return str(d)
+                    except:
+                        return '—'
+
+                tickets.append({
+                    'id': ticket_number or gmail_id,
+                    'company': company or '—',
+                    'email': sender or '—',
+                    'status': status_raw or 'INBOX',
+                    'statusColor': status_color_map.get(status, 'blue'),
+                    'quoteRef': quote_ref,
+                    'cpoRef': cpo_ref,
+                    'lines': line_items,
+                    'quoteAmt': quote_amount,
+                    'cpoAmt': cpo_amount,
+                    'assigned': fmt_date(created_at),
+                    'sent': '—',      # Could be derived from activity_logs
+                    'confirmed': '—',  # Could be derived from activity_logs
+                    'closed': '—',     # Could be derived from activity_logs
+                })
+
+            # --- KPIs ---
+            def fmt_value(val):
+                if val >= 1_000_000:
+                    return f"AED {val/1_000_000:.1f}M"
+                elif val >= 1_000:
+                    return f"AED {val/1_000:.1f}K"
+                elif val > 0:
+                    return f"AED {val:,.0f}"
+                return "AED 0"
+
+            sent_rate = f"{(sent_count + confirmed_count + closed_count) / total * 100:.1f}%" if total > 0 else "0%"
+            conv_rate = f"{confirmed_count / (sent_count + confirmed_count + closed_count) * 100:.1f}%" if (sent_count + confirmed_count + closed_count) > 0 else "0%"
+
+            kpis = {
+                'ticketsCameIn': total,
+                'quotesSent': sent_count + confirmed_count + closed_count,
+                'ordersConfirmed': confirmed_count + closed_count,
+                'closedDelivered': closed_count,
+                'lineItemsQuoted': total_line_items,
+                'quoteValue': fmt_value(total_quote_value),
+                'orderValue': fmt_value(total_order_value),
+                'sentRate': sent_rate,
+                'convRate': conv_rate,
+            }
+
+            # --- Funnel ---
+            quotes_sent = sent_count + confirmed_count + closed_count
+            orders_conf = confirmed_count + closed_count
+            funnel = [
+                {'label': 'Tickets Came In', 'value': total, 'sub': None, 'color': 'emerald'},
+                {
+                    'label': 'Quotes Sent', 'value': quotes_sent,
+                    'sub': f"{quotes_sent} of {total} ({round(quotes_sent/total*100) if total else 0}%)" if total else None,
+                    'color': 'blue'
+                },
+                {
+                    'label': 'Orders Confirmed', 'value': orders_conf,
+                    'sub': f"{orders_conf} of {quotes_sent} ({round(orders_conf/quotes_sent*100) if quotes_sent else 0}%)" if quotes_sent else None,
+                    'color': 'amber'
+                },
+                {
+                    'label': 'Closed / Delivered', 'value': closed_count,
+                    'sub': f"{closed_count} of {orders_conf} ({round(closed_count/orders_conf*100) if orders_conf else 0}%)" if orders_conf else None,
+                    'color': 'emerald'
+                },
+            ]
+
+            # --- Workload ---
+            avg_lines = round(total_line_items / quotes_sent, 1) if quotes_sent else 0
+            avg_quote = fmt_value(total_quote_value / quotes_sent) if quotes_sent else "AED 0"
+            avg_order = fmt_value(total_order_value / orders_conf) if orders_conf else "AED 0"
+
+            workload = {
+                'lineItems': {'value': str(total_line_items), 'avg': f"Avg {avg_lines} per quotation"},
+                'quoteValue': {'value': fmt_value(total_quote_value), 'avg': f"Avg {avg_quote} per quotation"},
+                'orderValue': {'value': fmt_value(total_order_value), 'avg': f"Avg {avg_order} per order"},
+            }
+
+            return {
+                'kpis': kpis,
+                'funnel': funnel,
+                'workload': workload,
+                'tickets': tickets,
+            }
+
+        except Exception as e:
+            logger.error(f"Error in get_single_employee_analytics: {e}")
+            return {'kpis': {}, 'funnel': [], 'workload': {}, 'tickets': []}
