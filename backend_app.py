@@ -836,14 +836,31 @@ def create_flask_app():
 
             db = DuckDBService()
             if db.connect():
-                db.connection.execute("""
-                    UPDATE email_extractions 
-                    SET ticket_status = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE gmail_id = ?
-                """, [status, gmail_id])
-                
-                
-                
+                now = get_uae_time()
+                status_upper = (status or '').upper()
+
+                # Determine which timestamp column to set
+                ts_col = None
+                if status_upper == 'SENT':
+                    ts_col = 'sent_at'
+                elif status_upper == 'ORDER_CONFIRMED':
+                    ts_col = 'confirmed_at'
+                elif status_upper in ('CLOSED', 'ORDER_COMPLETED'):
+                    ts_col = 'closed_at'
+
+                if ts_col:
+                    db.connection.execute(f"""
+                        UPDATE email_extractions 
+                        SET ticket_status = ?, updated_at = ?, {ts_col} = ?
+                        WHERE gmail_id = ?
+                    """, [status, now, now, gmail_id])
+                else:
+                    db.connection.execute("""
+                        UPDATE email_extractions 
+                        SET ticket_status = ?, updated_at = ?
+                        WHERE gmail_id = ?
+                    """, [status, now, gmail_id])
+
                 db.connection.commit()
 
                 #   Log Activity

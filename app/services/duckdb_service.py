@@ -90,9 +90,24 @@ class DuckDBService:
                         updated_at TIMESTAMP,
                         assigned_to VARCHAR,
                         internal_notes JSON DEFAULT '[]',
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        sent_at TIMESTAMP,
+                        confirmed_at TIMESTAMP,
+                        closed_at TIMESTAMP
                     );
                 """)
+
+                # Migration: add status timestamp columns if missing
+                try:
+                    existing_cols = [r[0] for r in self.connection.execute(
+                        "SELECT column_name FROM information_schema.columns WHERE table_name='email_extractions'"
+                    ).fetchall()]
+                    for col in ['sent_at', 'confirmed_at', 'closed_at']:
+                        if col not in existing_cols:
+                            self.connection.execute(f"ALTER TABLE email_extractions ADD COLUMN {col} TIMESTAMP")
+                            logger.info(f"Added column {col} to email_extractions")
+                except Exception as col_err:
+                    logger.warning(f"Column migration check: {col_err}")
 
                 # 3. Normalized File Tables
                 self.connection.execute("""
@@ -343,13 +358,33 @@ class DuckDBService:
             logger.error(f"Manual Ticket Creation Error: {e}")
             return None
     def update_ticket_status(self, ticket_number, new_status):
-        """Update workflow status (OPEN -> CLOSED)."""
+        """Update workflow status and set status timestamp."""
         try:
-            self.connection.execute("""
-                UPDATE email_extractions 
-                SET ticket_status = ?, updated_at = ?
-                WHERE ticket_number = ?
-            """, [new_status, get_uae_time(), ticket_number])
+            now = get_uae_time()
+            status_upper = (new_status or '').upper()
+
+            # Set the appropriate timestamp column
+            ts_col = None
+            if status_upper == 'SENT':
+                ts_col = 'sent_at'
+            elif status_upper == 'ORDER_CONFIRMED':
+                ts_col = 'confirmed_at'
+            elif status_upper in ('CLOSED', 'ORDER_COMPLETED'):
+                ts_col = 'closed_at'
+
+            if ts_col:
+                self.connection.execute(f"""
+                    UPDATE email_extractions 
+                    SET ticket_status = ?, updated_at = ?, {ts_col} = ?
+                    WHERE ticket_number = ?
+                """, [new_status, now, now, ticket_number])
+            else:
+                self.connection.execute("""
+                    UPDATE email_extractions 
+                    SET ticket_status = ?, updated_at = ?
+                    WHERE ticket_number = ?
+                """, [new_status, now, ticket_number])
+
             self.connection.commit()
             return True
         except Exception as e:
@@ -1559,7 +1594,8 @@ class DuckDBService:
             query = """
                 SELECT gmail_id, ticket_number, ticket_status, ticket_priority,
                        quotation_amount, sender, company_name, subject,
-                       created_at, updated_at, received_at
+                       created_at, updated_at, received_at,
+                       sent_at, confirmed_at, closed_at, activity_logs
                 FROM email_extractions
                 WHERE assigned_to = ?
             """
@@ -1587,7 +1623,8 @@ class DuckDBService:
 
             for row in rows:
                 gmail_id, ticket_number, status_raw, priority, quot_amt, \
-                    sender, company, subject, created_at, updated_at, received_at = row
+                    sender, company, subject, created_at, updated_at, received_at, \
+                    sent_at_col, confirmed_at_col, closed_at_col, activity_logs_raw = row
 
                 status = (status_raw or 'INBOX').upper()
                 total += 1
@@ -1598,6 +1635,67 @@ class DuckDBService:
                     confirmed_count += 1
                 elif status in ('CLOSED', 'ORDER_COMPLETED'):
                     closed_count += 1
+
+                # --- Resolve status timestamps with fallback to activity_logs ---
+                def _parse_logs_for_status(logs_json, target_status):
+                    """Search activity_logs for the first STATUS_CHANGE matching target."""
+                    if not logs_json:
+                        return None
+                    try:
+                        logs = json.loads(logs_json) if isinstance(logs_json, str) else logs_json
+                        if not isinstance(logs, list):
+                            return None
+                        for log in logs:
+                            if log.get('action') == 'STATUS_CHANGE':
+                                desc = log.get('description', '')
+                                if target_status.lower() in desc.lower():
+                                    ts = log.get('timestamp')
+                                    if ts:
+                                        return parse_date_string(ts)
+                    except Exception:
+                        pass
+                    return None
+
+                # Resolve sent_at
+                ticket_sent_at = sent_at_col
+                if not ticket_sent_at:
+                    ticket_sent_at = _parse_logs_for_status(activity_logs_raw, 'SENT')
+                    if ticket_sent_at and gmail_id:
+                        try:
+                            self.connection.execute(
+                                "UPDATE email_extractions SET sent_at = ? WHERE gmail_id = ?",
+                                [ticket_sent_at, gmail_id]
+                            )
+                        except Exception:
+                            pass
+
+                # Resolve confirmed_at
+                ticket_confirmed_at = confirmed_at_col
+                if not ticket_confirmed_at:
+                    ticket_confirmed_at = _parse_logs_for_status(activity_logs_raw, 'ORDER_CONFIRMED')
+                    if ticket_confirmed_at and gmail_id:
+                        try:
+                            self.connection.execute(
+                                "UPDATE email_extractions SET confirmed_at = ? WHERE gmail_id = ?",
+                                [ticket_confirmed_at, gmail_id]
+                            )
+                        except Exception:
+                            pass
+
+                # Resolve closed_at
+                ticket_closed_at = closed_at_col
+                if not ticket_closed_at:
+                    ticket_closed_at = _parse_logs_for_status(activity_logs_raw, 'CLOSED')
+                    if not ticket_closed_at:
+                        ticket_closed_at = _parse_logs_for_status(activity_logs_raw, 'ORDER_COMPLETED')
+                    if ticket_closed_at and gmail_id:
+                        try:
+                            self.connection.execute(
+                                "UPDATE email_extractions SET closed_at = ? WHERE gmail_id = ?",
+                                [ticket_closed_at, gmail_id]
+                            )
+                        except Exception:
+                            pass
 
                 # Quotation files for this ticket
                 quote_ref = '—'
@@ -1641,7 +1739,6 @@ class DuckDBService:
 
                 # Also consider quotation_amount on the ticket itself
                 ticket_quot_amt = self._safe_float(quot_amt)
-                # Use quotation files amount if available, otherwise fall back to ticket amount
                 effective_quote_val = quote_amount_num if quote_amount_num > 0 else ticket_quot_amt
                 total_quote_value += effective_quote_val
                 total_order_value += cpo_amount_num
@@ -1677,10 +1774,16 @@ class DuckDBService:
                     'quoteAmt': quote_amount,
                     'cpoAmt': cpo_amount,
                     'assigned': fmt_date(created_at),
-                    'sent': '—',      # Could be derived from activity_logs
-                    'confirmed': '—',  # Could be derived from activity_logs
-                    'closed': '—',     # Could be derived from activity_logs
+                    'sent': fmt_date(ticket_sent_at),
+                    'confirmed': fmt_date(ticket_confirmed_at),
+                    'closed': fmt_date(ticket_closed_at),
                 })
+
+            # Commit any backfilled timestamps
+            try:
+                self.connection.commit()
+            except Exception:
+                pass
 
             # --- KPIs ---
             def fmt_value(val):
@@ -1692,13 +1795,13 @@ class DuckDBService:
                     return f"AED {val:,.0f}"
                 return "AED 0"
 
-            sent_rate = f"{(sent_count + confirmed_count + closed_count) / total * 100:.1f}%" if total > 0 else "0%"
-            conv_rate = f"{confirmed_count / (sent_count + confirmed_count + closed_count) * 100:.1f}%" if (sent_count + confirmed_count + closed_count) > 0 else "0%"
+            sent_rate = f"{sent_count / total * 100:.1f}%" if total > 0 else "0%"
+            conv_rate = f"{confirmed_count / sent_count * 100:.1f}%" if sent_count > 0 else "0%"
 
             kpis = {
                 'ticketsCameIn': total,
-                'quotesSent': sent_count + confirmed_count + closed_count,
-                'ordersConfirmed': confirmed_count + closed_count,
+                'quotesSent': sent_count,
+                'ordersConfirmed': confirmed_count,
                 'closedDelivered': closed_count,
                 'lineItemsQuoted': total_line_items,
                 'quoteValue': fmt_value(total_quote_value),
@@ -1708,31 +1811,29 @@ class DuckDBService:
             }
 
             # --- Funnel ---
-            quotes_sent = sent_count + confirmed_count + closed_count
-            orders_conf = confirmed_count + closed_count
             funnel = [
                 {'label': 'Tickets Came In', 'value': total, 'sub': None, 'color': 'emerald'},
                 {
-                    'label': 'Quotes Sent', 'value': quotes_sent,
-                    'sub': f"{quotes_sent} of {total} ({round(quotes_sent/total*100) if total else 0}%)" if total else None,
+                    'label': 'Quotes Sent', 'value': sent_count,
+                    'sub': f"{sent_count} of {total} ({round(sent_count/total*100) if total else 0}%)" if total else None,
                     'color': 'blue'
                 },
                 {
-                    'label': 'Orders Confirmed', 'value': orders_conf,
-                    'sub': f"{orders_conf} of {quotes_sent} ({round(orders_conf/quotes_sent*100) if quotes_sent else 0}%)" if quotes_sent else None,
+                    'label': 'Orders Confirmed', 'value': confirmed_count,
+                    'sub': f"{confirmed_count} of {sent_count} ({round(confirmed_count/sent_count*100) if sent_count else 0}%)" if sent_count else None,
                     'color': 'amber'
                 },
                 {
                     'label': 'Closed / Delivered', 'value': closed_count,
-                    'sub': f"{closed_count} of {orders_conf} ({round(closed_count/orders_conf*100) if orders_conf else 0}%)" if orders_conf else None,
+                    'sub': f"{closed_count} of {confirmed_count} ({round(closed_count/confirmed_count*100) if confirmed_count else 0}%)" if confirmed_count else None,
                     'color': 'emerald'
                 },
             ]
 
             # --- Workload ---
-            avg_lines = round(total_line_items / quotes_sent, 1) if quotes_sent else 0
-            avg_quote = fmt_value(total_quote_value / quotes_sent) if quotes_sent else "AED 0"
-            avg_order = fmt_value(total_order_value / orders_conf) if orders_conf else "AED 0"
+            avg_lines = round(total_line_items / sent_count, 1) if sent_count else 0
+            avg_quote = fmt_value(total_quote_value / sent_count) if sent_count else "AED 0"
+            avg_order = fmt_value(total_order_value / confirmed_count) if confirmed_count else "AED 0"
 
             workload = {
                 'lineItems': {'value': str(total_line_items), 'avg': f"Avg {avg_lines} per quotation"},
