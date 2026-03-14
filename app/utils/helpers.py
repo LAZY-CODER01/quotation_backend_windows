@@ -102,7 +102,7 @@ def generate_unique_id(prefix: str = "") -> str:
     # - Add optional prefix
     # - Ensure URL-safe characters
     
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    timestamp = get_uae_time().strftime("%Y%m%d%H%M%S")
     unique_part = str(uuid.uuid4()).replace('-', '')[:8]
     
     if prefix:
@@ -384,7 +384,7 @@ def is_business_hours(dt: Optional[datetime] = None,
         bool: True if within business hours
     """
     if dt is None:
-        dt = datetime.now()
+        dt = get_uae_time()
     
     # Check weekday if required
     if weekdays_only and dt.weekday() >= 5:  # Saturday = 5, Sunday = 6

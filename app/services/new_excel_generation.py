@@ -48,7 +48,7 @@ class ExcelGenerationService:
                     logger.error("Template not found.")
                     return None
 
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                timestamp = get_uae_time().strftime("%Y%m%d_%H%M%S")
                 filename = f"quotation_{gmail_id}_{timestamp}.xlsx"
                 output_path = os.path.join(self.output_dir, filename)
 

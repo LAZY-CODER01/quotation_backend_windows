@@ -53,7 +53,7 @@ class ExcelGenerationService:
                 raise FileNotFoundError(f"Template file not found: {self.template_path}")
 
             # Create unique filename
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = get_uae_time().strftime("%Y%m%d_%H%M%S")
             filename = f"quotation_{gmail_id}_{timestamp}.xlsx"
             output_path = os.path.join(self.output_dir, filename)
 

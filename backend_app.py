@@ -374,6 +374,30 @@ def create_flask_app():
             logger.error(f"Employee analytics error: {e}")
             return jsonify({"error": str(e)}), 500
 
+    @app.route('/api/admin/employee-analytics-all', methods=['GET', 'OPTIONS'])
+    @jwt_required(roles=['ADMIN'])
+    def get_all_employee_analytics_route():
+        """Get aggregated analytics for ALL employees at once."""
+        try:
+            start_date = request.args.get('start_date')
+            end_date = request.args.get('end_date')
+
+            db = DuckDBService()
+            if not db.connect():
+                return jsonify({"error": "Database connection failed"}), 500
+
+            result = db.get_all_employees_analytics(start_date, end_date)
+            db.disconnect()
+
+            return jsonify({
+                "success": True,
+                "team_kpis": result.get('team_kpis', {}),
+                "employees": result.get('employees', []),
+            })
+        except Exception as e:
+            logger.error(f"All employee analytics error: {e}")
+            return jsonify({"error": str(e)}), 500
+
     @app.route('/api/admin/clients', methods=['GET', 'POST', 'OPTIONS'])
     @jwt_required(roles=['ADMIN'])
     def manage_clients():
