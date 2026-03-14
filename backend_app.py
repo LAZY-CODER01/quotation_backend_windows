@@ -1405,27 +1405,7 @@ def create_flask_app():
             return jsonify({'error': 'DB Connection failed'}), 500
         except Exception as e:
             return jsonify({'error': str(e)}), 500 
-    @app.route('/api/admin/employee-analytics/<user_id>', methods=['GET', 'OPTIONS'])
-    @jwt_required(roles=['ADMIN'])
-    def get_employee_analytics_route(user_id):
-        """Get granular analytics for a specific employee."""
-        if request.method == 'OPTIONS':
-             return jsonify({'status': 'ok'}), 200
-             
-        try:
-            start_date = request.args.get('start_date')
-            end_date = request.args.get('end_date')
 
-            db = DuckDBService()
-            if db.connect():
-                data = db.get_employee_analytics(user_id, start_date, end_date)
-                db.disconnect()
-                if data:
-                    return jsonify({"success": True, **data})
-                return jsonify({"error": "User not found or no data"}), 404
-            return jsonify({"error": "Database connection failed"}), 500
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500       
     @app.route('/api/health')
     def health():
         return jsonify({"status": "ok", "timestamp": get_uae_time().isoformat()})
