@@ -1337,7 +1337,8 @@ class DuckDBService:
         except Exception as e:
             logger.error(f"Error calculating employee stats: {e}")
             return []
-     def get_employee_analytics(self, user_id, start_date_str=None, end_date_str=None):
+
+    def get_employee_analytics(self, user_id, start_date_str=None, end_date_str=None):
         """
         Gathers detailed analytics for a single employee or all employees.
         Returns format compatible with frontend EmployeeAnalytics:
