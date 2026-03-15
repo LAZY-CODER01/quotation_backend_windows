@@ -1070,8 +1070,9 @@ def create_flask_app():
     def update_file_amount():
         try:
             data = request.get_json()
+            file_type = data.get('file_type', 'quotation')  # "quotation" or "cpo"
             db = DuckDBService()
-            if db.connect() and db.update_file_amount(data.get('gmail_id'), data.get('file_id'), data.get('amount')):
+            if db.connect() and db.update_file_amount(data.get('gmail_id'), data.get('file_id'), data.get('amount'), file_type):
                 db.disconnect()
                 return jsonify({'success': True})
             return jsonify({'error': 'Failed'}), 500

@@ -926,12 +926,11 @@ class DuckDBService:
             logger.error(f"Error adding quotation file: {e}")
             return False, str(e)
 
-    def update_file_amount(self, gmail_id, file_id, amount):
+    def update_file_amount(self, gmail_id, file_id, amount, file_type="quotation"):
         try:
-            # Update amount in quotations table directly using the ID
-            # We ignore gmail_id since ID is unique, but we could verify if needed.
-            # Assuming file_id is the integer ID from the database
-            self.connection.execute("UPDATE quotations SET amount = ? WHERE id = ?", [amount, file_id])
+            # Determine which table to update based on file_type
+            table = "cpo_orders" if file_type == "cpo" else "quotations"
+            self.connection.execute(f"UPDATE {table} SET amount = ? WHERE id = ?", [amount, file_id])
             self.connection.commit()
             return True
         except Exception as e:
