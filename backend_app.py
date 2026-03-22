@@ -1474,19 +1474,19 @@ def create_flask_app():
     # Start Monitoring on App Startup
     start_company_gmail_monitoring()
 
-    # --- Bootstrap Local Cache & Start Nightly Sync ---
-    def _bootstrap_and_schedule_sync():
-        """Bootstrap local cache from cloud on first run, then schedule nightly sync."""
-        try:
-            db = DuckDBService()
-            if db.connect():
-                db.bootstrap_local_cache()
-                db.disconnect()
-                logging.info("Local cache bootstrap complete.")
-        except Exception as e:
-            logging.error(f"Bootstrap error: {e}")
+    # --- Bootstrap Local Cache (synchronous — must complete before serving requests) ---
+    try:
+        db = DuckDBService()
+        if db.connect():
+            db.bootstrap_local_cache()
+            db.disconnect()
+            logging.info("Local cache bootstrap complete.")
+    except Exception as e:
+        logging.error(f"Bootstrap error: {e}")
 
-        # Schedule nightly sync loop
+    # --- Nightly Sync (background daemon thread) ---
+    def _nightly_sync_loop():
+        """Runs sync_from_cloud() every 24 hours."""
         while True:
             try:
                 time.sleep(24 * 60 * 60)  # Wait 24 hours
@@ -1499,7 +1499,7 @@ def create_flask_app():
             except Exception as e:
                 logging.error(f"Nightly sync error: {e}")
 
-    sync_thread = threading.Thread(target=_bootstrap_and_schedule_sync, daemon=True)
+    sync_thread = threading.Thread(target=_nightly_sync_loop, daemon=True)
     sync_thread.start()
 
     return app

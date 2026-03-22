@@ -319,12 +319,14 @@ class DuckDBService:
                         "SELECT * FROM email_extractions LIMIT 0"
                     ).description]
                     placeholders = ', '.join(['?'] * len(cols))
+                    col_list = ', '.join(cols)
+                    # Build ON CONFLICT update set (exclude the PK column gmail_id)
+                    update_cols = [c for c in cols if c != 'gmail_id']
+                    update_set = ', '.join([f"{c} = EXCLUDED.{c}" for c in update_cols])
+                    upsert_sql = f"INSERT INTO email_extractions ({col_list}) VALUES ({placeholders}) ON CONFLICT (gmail_id) DO UPDATE SET {update_set}"
                     for row in rows:
                         try:
-                            self.connection.execute(
-                                f"INSERT OR REPLACE INTO email_extractions ({', '.join(cols)}) VALUES ({placeholders})",
-                                list(row)
-                            )
+                            self.connection.execute(upsert_sql, list(row))
                         except Exception as row_err:
                             logger.warning(f"Bootstrap row insert error: {row_err}")
                     total_synced += len(rows)
@@ -340,12 +342,11 @@ class DuckDBService:
                 if rows:
                     cols = [desc[0] for desc in self.cloud_connection.execute("SELECT * FROM quotations LIMIT 0").description]
                     placeholders = ', '.join(['?'] * len(cols))
+                    col_list = ', '.join(cols)
+                    upsert_sql = f"INSERT INTO quotations ({col_list}) VALUES ({placeholders}) ON CONFLICT (id) DO NOTHING"
                     for row in rows:
                         try:
-                            self.connection.execute(
-                                f"INSERT OR REPLACE INTO quotations ({', '.join(cols)}) VALUES ({placeholders})",
-                                list(row)
-                            )
+                            self.connection.execute(upsert_sql, list(row))
                         except:
                             pass
             except Exception as e:
@@ -360,12 +361,11 @@ class DuckDBService:
                 if rows:
                     cols = [desc[0] for desc in self.cloud_connection.execute("SELECT * FROM cpo_orders LIMIT 0").description]
                     placeholders = ', '.join(['?'] * len(cols))
+                    col_list = ', '.join(cols)
+                    upsert_sql = f"INSERT INTO cpo_orders ({col_list}) VALUES ({placeholders}) ON CONFLICT (id) DO NOTHING"
                     for row in rows:
                         try:
-                            self.connection.execute(
-                                f"INSERT OR REPLACE INTO cpo_orders ({', '.join(cols)}) VALUES ({placeholders})",
-                                list(row)
-                            )
+                            self.connection.execute(upsert_sql, list(row))
                         except:
                             pass
             except Exception as e:
@@ -378,10 +378,13 @@ class DuckDBService:
                     if rows:
                         cols = [desc[0] for desc in self.cloud_connection.execute(f"SELECT * FROM {table} LIMIT 0").description]
                         placeholders = ', '.join(['?'] * len(cols))
+                        col_list = ', '.join(cols)
+                        # Delete and re-insert for small tables to avoid conflict issues
+                        self.connection.execute(f"DELETE FROM {table}")
                         for row in rows:
                             try:
                                 self.connection.execute(
-                                    f"INSERT OR REPLACE INTO {table} ({', '.join(cols)}) VALUES ({placeholders})",
+                                    f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})",
                                     list(row)
                                 )
                             except:
@@ -416,12 +419,13 @@ class DuckDBService:
                         "SELECT * FROM email_extractions LIMIT 0"
                     ).description]
                     placeholders = ', '.join(['?'] * len(cols))
+                    col_list = ', '.join(cols)
+                    update_cols = [c for c in cols if c != 'gmail_id']
+                    update_set = ', '.join([f"{c} = EXCLUDED.{c}" for c in update_cols])
+                    upsert_sql = f"INSERT INTO email_extractions ({col_list}) VALUES ({placeholders}) ON CONFLICT (gmail_id) DO UPDATE SET {update_set}"
                     for row in rows:
                         try:
-                            self.connection.execute(
-                                f"INSERT OR REPLACE INTO email_extractions ({', '.join(cols)}) VALUES ({placeholders})",
-                                list(row)
-                            )
+                            self.connection.execute(upsert_sql, list(row))
                         except Exception as row_err:
                             logger.warning(f"Sync row upsert error: {row_err}")
                     logger.info(f"Synced {len(rows)} email records from cloud")
@@ -438,12 +442,11 @@ class DuckDBService:
                     if rows:
                         cols = [desc[0] for desc in self.cloud_connection.execute(f"SELECT * FROM {table} LIMIT 0").description]
                         placeholders = ', '.join(['?'] * len(cols))
+                        col_list = ', '.join(cols)
+                        upsert_sql = f"INSERT INTO {table} ({col_list}) VALUES ({placeholders}) ON CONFLICT (id) DO NOTHING"
                         for row in rows:
                             try:
-                                self.connection.execute(
-                                    f"INSERT OR REPLACE INTO {table} ({', '.join(cols)}) VALUES ({placeholders})",
-                                    list(row)
-                                )
+                                self.connection.execute(upsert_sql, list(row))
                             except:
                                 pass
                 except Exception as e:
