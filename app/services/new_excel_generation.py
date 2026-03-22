@@ -138,33 +138,12 @@ class ExcelGenerationService:
         Fills the Excel data with EXACT formatting, Borders, Colors using win32com.
         """
         requirements = extraction_result.get("Requirements", [])
-        
+        if not requirements:
+            return
+            
         xlContinuous = 1
         xlThin = 2
 
-        def apply_borders(cell_or_range, col_start=None, col_end=None, target_row=None):
-            """Apply per-edge borders reliably via COM."""
-            if col_start is not None and col_end is not None and target_row is not None:
-                for c in range(col_start, col_end + 1):
-                    _c = ws.Cells(target_row, c)
-                    for edge in [xlEdgeLeft, xlEdgeTop, xlEdgeBottom, xlEdgeRight]:
-                        try:
-                            b = _c.Borders(edge)
-                            b.LineStyle = xlContinuous
-                            b.Weight = xlThin
-                            b.Color = color_black
-                        except Exception:
-                            pass
-            else:
-                for edge in [xlEdgeLeft, xlEdgeTop, xlEdgeBottom, xlEdgeRight]:
-                    try:
-                        b = cell_or_range.Borders(edge)
-                        b.LineStyle = xlContinuous
-                        b.Weight = xlThin
-                        b.Color = color_black
-                    except Exception:
-                        pass
-        
         xlCenter = -4108
         xlLeft = -4131
         xlRight = -4152
@@ -174,7 +153,35 @@ class ExcelGenerationService:
         xlEdgeTop = 8
         xlEdgeBottom = 9
         xlEdgeRight = 10
+        xlInsideVertical = 11
+        xlInsideHorizontal = 12
         
+        def apply_borders_to_range(rng):
+            """Applies outer and inner borders to an entire grid at once."""
+            for edge in [xlEdgeLeft, xlEdgeTop, xlEdgeBottom, xlEdgeRight, xlInsideVertical, xlInsideHorizontal]:
+                try:
+                    b = rng.Borders(edge)
+                    b.LineStyle = xlContinuous
+                    b.Weight = xlThin
+                    b.Color = color_black
+                except Exception:
+                    pass
+
+        def apply_borders(cell_or_range, col_start=None, col_end=None, target_row=None):
+            """Preserved for footer row compatibility."""
+            if col_start is not None and target_row is not None:
+                rng = ws.Range(ws.Cells(target_row, col_start), ws.Cells(target_row, col_end))
+            else:
+                rng = cell_or_range
+            for edge in [xlEdgeLeft, xlEdgeTop, xlEdgeBottom, xlEdgeRight]:
+                try:
+                    b = rng.Borders(edge)
+                    b.LineStyle = xlContinuous
+                    b.Weight = xlThin
+                    b.Color = color_black
+                except Exception:
+                    pass
+
         def rgb_to_ole(hex_color):
             hex_color = hex_color.lstrip('#')
             if len(hex_color) == 6:
@@ -193,303 +200,207 @@ class ExcelGenerationService:
         color_light_blue = rgb_to_ole("DDEBF7")
 
         START_ROW = 12
-        actual_rows = 0
+        actual_rows = len(requirements)
+        last_data_row = START_ROW + actual_rows - 1
 
         tmp_img_dir = os.path.join(self.output_dir, "temp_images")
         os.makedirs(tmp_img_dir, exist_ok=True)
 
-        # --- A. FILL DATA ROWS ---
+        # --- A. PARALLEL IMAGE DOWNLOAD ---
+        import concurrent.futures
+        def download_img(idx, url, row):
+            try:
+                response = requests.get(url, timeout=5)
+                if response.status_code == 200:
+                    img_data = BytesIO(response.content)
+                    pil_img = PilImage.open(img_data).convert("RGBA")
+                    canvas_size = (130, 130)
+                    canvas = PilImage.new('RGBA', canvas_size, (255, 255, 255, 0))
+                    pil_img.thumbnail(canvas_size, PilImage.LANCZOS)
+                    x = (canvas_size[0] - pil_img.width) // 2
+                    y = (canvas_size[1] - pil_img.height) // 2
+                    canvas.paste(pil_img, (x, y), pil_img)
+                    if canvas.mode == "RGBA":
+                        bg = PilImage.new('RGB', canvas.size, (255, 255, 255))
+                        bg.paste(canvas, mask=canvas.split()[3])
+                        canvas = bg
+                    temp_img_path = os.path.join(tmp_img_dir, f"img_{row}_{idx}.png")
+                    canvas.save(temp_img_path, format='PNG')
+                    return row, temp_img_path
+            except Exception as e:
+                logger.error(f"Image download error row {row}: {e}")
+            return row, None
+
+        image_tasks = []
+        values_2d = []
+        rich_text_data = []
+
+        # --- B. PREPARE ALL ROWS MAPPED TO A SINGLE 2D ARRAY ---
         for idx, item in enumerate(requirements): 
             row = START_ROW + idx
-            actual_rows += 1
-            try:
-                # --- CHECK FOR SELECTED MATCH ---
-                selected_match = item.get("selectedMatch")
-                
-                desc_text = str(item.get("Description", "") or "N/A")
-                offering_text = str(item.get("Company Offering", "") or "")
-                brand_text = item.get("Brand and model", "")
-                price_val = self._to_float(item.get("Unit price", 0))
-                
-                if selected_match:
-                    if selected_match.get("offer"):
-                        offering_text = selected_match.get("offer")
-                    if selected_match.get("brand"):
-                        brand_text = selected_match.get("brand")
-                    if selected_match.get("price") is not None:
-                        price_val = self._to_float(selected_match.get("price"))
+            selected_match = item.get("selectedMatch")
+            
+            desc_text = str(item.get("Description", "") or "N/A")
+            offering_text = str(item.get("Company Offering", "") or "")
+            brand_text = item.get("Brand and model", "")
+            price_val = self._to_float(item.get("Unit price", 0))
+            
+            if selected_match:
+                if selected_match.get("offer"):
+                    offering_text = selected_match.get("offer")
+                if selected_match.get("brand"):
+                    brand_text = selected_match.get("brand")
+                if selected_match.get("price") is not None:
+                    price_val = self._to_float(selected_match.get("price"))
+                if selected_match.get("image_url"):
+                    image_tasks.append((idx, selected_match.get("image_url"), row))
                         
-                desc_text = desc_text.replace('\r\n', '\n')
-                offering_text = offering_text.replace('\r\n', '\n')
+            desc_text = desc_text.replace('\r\n', '\n')
+            offering_text = offering_text.replace('\r\n', '\n')
 
-                # Col 1: SL NO
-                cell_sl = ws.Cells(row, 1)
-                cell_sl.Value = idx + 1
-                cell_sl.Font.Bold = True
+            label1 = "Your Requirement:"
+            label2 = "We OFFER:"
+            offer_body = offering_text.strip() if offering_text.strip() else " "
+            full_desc = f"{label1}\n{desc_text}\n\n{label2}\n{offer_body} "
+            
+            qty_val = self._to_float(item.get("Quantity", 0))
+            unit_val = item.get("Unit", "")
+            
+            # Map columns A-N (1 to 14)
+            values_2d.append([
+                idx + 1,                             # 1: SL NO
+                full_desc,                           # 2: DESCRIPTION (Rich text handled later)
+                brand_text,                          # 3: BRAND
+                "",                                  # 4: IMAGE (Placeholder)
+                "Ex stock, subject to prior sales.", # 5: DELIVERY
+                qty_val,                             # 6: QTY
+                unit_val,                            # 7: UNIT
+                price_val,                           # 8: PRICE
+                f"=F{row}*H{row}",                   # 9: TOTAL Formula
+                "",                                  # 10: Empty (border spacer)
+                0.00,                                # 11: CP Input
+                0.00,                                # 12: % Input
+                f"=(N{row}-K{row})*F{row}",          # 13: PROFIT Formula
+                f"=K{row}*(1+L{row})"                # 14: SP Formula
+            ])
+            
+            # Store metadata for the rich text pass
+            rich_text_data.append((row, len(label1), len(desc_text), len(label2), len(full_desc)))
 
-                # Col 2: DESCRIPTION (Rich Text)
-                # Build the combined text string
-                label1 = "Your Requirement:"
-                label2 = "We OFFER:"
-                # If backend provides offering data, use it; otherwise put a space " " as
-                # a black-bold placeholder the user can type over (Excel
-                # will carry the black-bold formatting forward).
-                offer_body = offering_text.strip() if offering_text.strip() else " "
-                full_desc = f"{label1}\n{desc_text}\n\n{label2}\n{offer_body} "
+        image_results = {}
+        if image_tasks:
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                    futures = [executor.submit(download_img, idx, url, row) for idx, url, row in image_tasks]
+                    for future in concurrent.futures.as_completed(futures):
+                        r, path = future.result()
+                        if path:
+                            image_results[r] = path
+            except Exception as e:
+                logger.error(f"Error in parallel image download: {e}")
+
+        # --- C. BULK INSERT & BATCH FORMATTING ---
+        # 1 COM call inserts all data and formulas at once!
+        data_range = ws.Range(ws.Cells(START_ROW, 1), ws.Cells(last_data_row, 14))
+        data_range.Value = values_2d
+
+        # 1 COM call sets the font for the entire grid
+        data_range.Font.Name = "Calibri"
+        data_range.Font.Size = 11
+        data_range.VerticalAlignment = xlCenter
+        data_range.HorizontalAlignment = xlCenter
+        data_range.WrapText = True
+
+        # Specific Alignment for Description Column
+        col_desc = ws.Range(ws.Cells(START_ROW, 2), ws.Cells(last_data_row, 2))
+        col_desc.HorizontalAlignment = xlLeft
+        col_desc.VerticalAlignment = xlTop
+
+        # Bulk Row Height
+        ws.Range(f"A{START_ROW}:A{last_data_row}").RowHeight = 140
+
+        # Bulk Number Formats
+        ws.Range(ws.Cells(START_ROW, 6), ws.Cells(last_data_row, 6)).NumberFormat = "#,##0.00"
+        ws.Range(ws.Cells(START_ROW, 8), ws.Cells(last_data_row, 9)).NumberFormat = "#,##0.00"
+        ws.Range(ws.Cells(START_ROW, 11), ws.Cells(last_data_row, 11)).NumberFormat = "#,##0.00"
+        ws.Range(ws.Cells(START_ROW, 12), ws.Cells(last_data_row, 12)).NumberFormat = "0.00%"
+        ws.Range(ws.Cells(START_ROW, 13), ws.Cells(last_data_row, 14)).NumberFormat = "#,##0.00"
+
+        # Bulk Colors
+        ws.Range(ws.Cells(START_ROW, 5), ws.Cells(last_data_row, 5)).Font.Color = color_red
+        ws.Range(ws.Cells(START_ROW, 12), ws.Cells(last_data_row, 12)).Interior.Color = color_light_green
+        ws.Range(ws.Cells(START_ROW, 13), ws.Cells(last_data_row, 13)).Interior.Color = color_light_blue
+
+        # Bulk Bold Columns
+        for bc in [1, 3, 5, 6, 7, 8, 9, 11, 13, 14]:
+            ws.Range(ws.Cells(START_ROW, bc), ws.Cells(last_data_row, bc)).Font.Bold = True
+
+        # Bulk Borders
+        apply_borders_to_range(data_range)
+
+        # --- D. APPLY IMAGES & RICH TEXT PER ROW ---
+        # This is the only per-row looping we do for COM objects now
+        for row, l1_len, desc_len, l2_len, total_len in rich_text_data:
+            try:
+                # 1. Images
+                if row in image_results:
+                    temp_img_path = image_results[row]
+                    cell_img = ws.Cells(row, 4)
+                    pic_width, pic_height = 90, 90
+                    pic_left = cell_img.Left + (cell_img.Width - pic_width) / 2
+                    pic_top = cell_img.Top + (cell_img.Height - pic_height) / 2
+                    ws.Shapes.AddPicture(temp_img_path, False, True, pic_left, pic_top, pic_width, pic_height)
+                
+                # 2. Rich Text formatting
                 cell_desc = ws.Cells(row, 2)
-                cell_desc.Value = full_desc
-
-                total_len = len(full_desc)
-
-                # ==== RICH TEXT FORMATTING ====
-                # Excel COM bleeds GetCharacters format FORWARD to subsequent chars.
-                # Fix: format strictly in sequential order, covering EVERY character,
-                # with NO overlapping ranges. Each section is formatted immediately
-                # after the previous one so nothing inherits a wrong color.
-
-                # Section positions (1-indexed for GetCharacters):
-                # Section A: "Your Requirement:"  → purple, bold, underline, 13pt
-                # Section B: "\n" + desc_text      → black, bold, 11pt, no underline
-                # Section C: "\n\n"                → black, bold, 11pt, no underline
-                # Section D: "We OFFER:"           → red, bold, underline, 13pt
-                # Section E: "\n" + offering_text + " " → black, bold, 11pt, no underline
-
-                secA_start = 1
-                secA_len   = len(label1)                                    # "Your Requirement:"
-
-                secB_start = secA_start + secA_len                          # \n after label1
-                secB_len   = 1 + len(desc_text)                             # \n + desc_text
-
-                secC_start = secB_start + secB_len                          # \n\n separator
-                secC_len   = 2
-
-                secD_start = secC_start + secC_len                          # "We OFFER:"
-                secD_len   = len(label2)
-
-                secE_start = secD_start + secD_len                          # \n + offering_text + " "
-                secE_len   = total_len - secE_start + 1                     # everything remaining
-
-                # --- A: "Your Requirement:" (purple, bold, underline, 13pt) ---
-                try:
-                    if secA_len > 0 and secA_start + secA_len - 1 <= total_len:
-                        fA = cell_desc.GetCharacters(secA_start, secA_len).Font
-                        fA.Name = "Calibri"
-                        fA.Size = 13
-                        fA.Bold = True
-                        fA.Underline = 2
-                        fA.Color = color_purple
-                except Exception as e:
-                    logger.warning(f"Rich text secA row {row}: {e}")
-
-                # --- B: body under "Your Requirement:" (black, bold, 11pt) ---
-                try:
-                    if secB_len > 0 and secB_start + secB_len - 1 <= total_len:
-                        fB = cell_desc.GetCharacters(secB_start, secB_len).Font
-                        fB.Name = "Calibri"
-                        fB.Size = 11
-                        fB.Bold = True
-                        fB.Color = color_black
-                        fB.Underline = -4142
-                except Exception as e:
-                    logger.warning(f"Rich text secB row {row}: {e}")
-
-                # --- C: separator newlines (black, bold, 11pt) ---
-                try:
-                    if secC_len > 0 and secC_start + secC_len - 1 <= total_len:
-                        fC = cell_desc.GetCharacters(secC_start, secC_len).Font
-                        fC.Name = "Calibri"
-                        fC.Size = 11
-                        fC.Bold = True
-                        fC.Color = color_black
-                        fC.Underline = -4142
-                except Exception as e:
-                    logger.warning(f"Rich text secC row {row}: {e}")
-
-                # --- D: "We OFFER:" (red, bold, underline, 13pt) ---
-                try:
-                    if secD_len > 0 and secD_start + secD_len - 1 <= total_len:
-                        fD = cell_desc.GetCharacters(secD_start, secD_len).Font
-                        fD.Name = "Calibri"
-                        fD.Size = 13
-                        fD.Bold = True
-                        fD.Underline = 2
-                        fD.Color = color_red
-                except Exception as e:
-                    logger.warning(f"Rich text secD row {row}: {e}")
-
-                # --- E: body under "We OFFER:" (black, bold, 11pt) — MUST come last ---
-                try:
-                    if secE_len > 0 and secE_start + secE_len - 1 <= total_len:
-                        fE = cell_desc.GetCharacters(secE_start, secE_len).Font
-                        fE.Name = "Calibri"
-                        fE.Size = 11
-                        fE.Bold = True
-                        fE.Color = color_black
-                        fE.Underline = -4142
-                except Exception as e:
-                    logger.warning(f"Rich text secE row {row}: {e}")
-
-                # Col 3: BRAND (bold)
-                cell_brand = ws.Cells(row, 3)
-                cell_brand.Value = brand_text
-                cell_brand.Font.Bold = True
-                cell_brand.Font.Name = "Calibri"
-                cell_brand.Font.Size = 11
                 
-                # Col 4: IMAGE (NEW & CENTERED)
-                if selected_match and selected_match.get("image_url"):
-                    image_url = selected_match.get("image_url")
-                    try:
-                        response = requests.get(image_url, timeout=5)
-                        if response.status_code == 200:
-                            img_data = BytesIO(response.content)
-                            pil_img = PilImage.open(img_data).convert("RGBA")
-                            
-                            canvas_size = (130, 130)
-                            canvas = PilImage.new('RGBA', canvas_size, (255, 255, 255, 0))
-                            
-                            pil_img.thumbnail(canvas_size, PilImage.LANCZOS)
-                            
-                            x = (canvas_size[0] - pil_img.width) // 2
-                            y = (canvas_size[1] - pil_img.height) // 2
-                            
-                            canvas.paste(pil_img, (x, y), pil_img)
-                            
-                            if canvas.mode == "RGBA":
-                                bg = PilImage.new('RGB', canvas.size, (255, 255, 255))
-                                bg.paste(canvas, mask=canvas.split()[3])
-                                canvas = bg
-                                
-                            temp_img_path = os.path.join(tmp_img_dir, f"img_{row}_{idx}.png")
-                            canvas.save(temp_img_path, format='PNG')
-                            
-                            cell_img = ws.Cells(row, 4)
-                            pic_width = 90
-                            pic_height = 90
-                            pic_left = cell_img.Left + (cell_img.Width - pic_width) / 2
-                            pic_top = cell_img.Top + (cell_img.Height - pic_height) / 2
-                            
-                            ws.Shapes.AddPicture(temp_img_path, False, True, pic_left, pic_top, pic_width, pic_height)
-                            
-                    except Exception as img_err:
-                        logger.error(f"Failed to load/center image for row {row}: {img_err}")
+                s_A = 1
+                l_A = l1_len
+                s_B = s_A + l_A
+                l_B = 1 + desc_len
+                s_C = s_B + l_B
+                l_C = 2
+                s_D = s_C + l_C
+                l_D = l2_len
+                s_E = s_D + l_D
+                l_E = total_len - s_E + 1
 
-                # Col 5: DELIVERY (RED BOLD)
-                cell_del = ws.Cells(row, 5)
-                cell_del.Value = "Ex stock, subject to prior sales."
-                cell_del.Font.Name = "Calibri"
-                cell_del.Font.Size = 11
-                cell_del.Font.Color = color_red
-                cell_del.Font.Bold = True
+                if l_A > 0 and s_A + l_A - 1 <= total_len:
+                    fA = cell_desc.GetCharacters(s_A, l_A).Font
+                    fA.Size = 13
+                    fA.Bold = True
+                    fA.Underline = 2
+                    fA.Color = color_purple
 
-                # Col 6: QTY (BOLD)
-                qty_val = self._to_float(item.get("Quantity", 0))
-                cell_qty = ws.Cells(row, 6)
-                cell_qty.Value = qty_val
-                cell_qty.NumberFormat = "#,##0.00"
-                cell_qty.Font.Name = "Calibri"
-                cell_qty.Font.Size = 11
-                cell_qty.Font.Bold = True
+                if l_B > 0 and s_B + l_B - 1 <= total_len:
+                    fB = cell_desc.GetCharacters(s_B, l_B).Font
+                    fB.Size = 11
+                    fB.Bold = True
+                    fB.Color = color_black
+                    fB.Underline = -4142
 
-                # Col 7: UNIT (BOLD)
-                cell_unit = ws.Cells(row, 7)
-                cell_unit.Value = item.get("Unit", "")
-                cell_unit.Font.Name = "Calibri"
-                cell_unit.Font.Size = 11
-                cell_unit.Font.Bold = True
+                if l_C > 0 and s_C + l_C - 1 <= total_len:
+                    fC = cell_desc.GetCharacters(s_C, l_C).Font
+                    fC.Size = 11
+                    fC.Bold = True
+                    fC.Color = color_black
+                    fC.Underline = -4142
 
-                # Col 8: UNIT PRICE (BOLD)
-                cell_price = ws.Cells(row, 8)
-                cell_price.Value = price_val 
-                cell_price.NumberFormat = "#,##0.00"
-                cell_price.Font.Name = "Calibri"
-                cell_price.Font.Size = 11
-                cell_price.Font.Bold = True
+                if l_D > 0 and s_D + l_D - 1 <= total_len:
+                    fD = cell_desc.GetCharacters(s_D, l_D).Font
+                    fD.Size = 13
+                    fD.Bold = True
+                    fD.Underline = 2
+                    fD.Color = color_red
 
-                # Col 9: TOTAL PRICE FORMULA (BOLD)
-                cell_total = ws.Cells(row, 9)
-                cell_total.Formula = f"=F{row}*H{row}"
-                cell_total.NumberFormat = "#,##0.00"
-                cell_total.Font.Name = "Calibri"
-                cell_total.Font.Size = 11
-                cell_total.Font.Bold = True
-
-                # --- INTERNAL CALCULATIONS (CP/Profit) ---
-                
-                # Col K (11): CP Input (BOLD)
-                cell_cp = ws.Cells(row, 11)
-                cell_cp.Value = 0.00
-                cell_cp.NumberFormat = "#,##0.00"
-                cell_cp.Font.Name = "Calibri"
-                cell_cp.Font.Size = 11
-                cell_cp.Font.Bold = True
-
-                # Col L (12): % Input (Light Green Background)
-                cell_pct = ws.Cells(row, 12)
-                cell_pct.Value = 0.00
-                cell_pct.NumberFormat = "0.00%"
-                cell_pct.Interior.Color = color_light_green
-
-                # Col M (13): Profit Formula (BOLD + Light Blue Background)
-                cell_profit = ws.Cells(row, 13)
-                cell_profit.Formula = f"=(N{row}-K{row})*F{row}"
-                cell_profit.NumberFormat = "#,##0.00"
-                cell_profit.Font.Name = "Calibri"
-                cell_profit.Font.Size = 11
-                cell_profit.Font.Bold = True
-                cell_profit.Interior.Color = color_light_blue
-
-                # Col N (14): SP Formula (BOLD)
-                cell_sp = ws.Cells(row, 14)
-                cell_sp.Formula = f"=K{row}*(1+L{row})"
-                cell_sp.NumberFormat = "#,##0.00"
-                cell_sp.Font.Name = "Calibri"
-                cell_sp.Font.Size = 11
-                cell_sp.Font.Bold = True
-
-                # --- APPLY ROW HEIGHT ---
-                ws.Rows(row).RowHeight = 140
-
-                # --- APPLY BORDERS & ALIGNMENT (all visible cols 1-9) ---
-                for col in range(1, 10):
-                    cell = ws.Cells(row, col)
-
-                    # Apply each border edge explicitly – most reliable COM approach
-                    for edge in [xlEdgeLeft, xlEdgeTop, xlEdgeBottom, xlEdgeRight]:
-                        try:
-                            b = cell.Borders(edge)
-                            b.LineStyle = xlContinuous
-                            b.Weight = xlThin
-                            b.Color = color_black
-                        except Exception:
-                            pass
-
-                    cell.WrapText = True
-                    if col == 2:
-                        cell.HorizontalAlignment = xlLeft
-                        cell.VerticalAlignment = xlTop
-                    else:
-                        cell.HorizontalAlignment = xlCenter
-                        cell.VerticalAlignment = xlCenter
-
-                # Apply borders to internal calc columns 10-14 as well
-                for col in range(10, 15):
-                    cell = ws.Cells(row, col)
-                    for edge in [xlEdgeLeft, xlEdgeTop, xlEdgeBottom, xlEdgeRight]:
-                        try:
-                            b = cell.Borders(edge)
-                            b.LineStyle = xlContinuous
-                            b.Weight = xlThin
-                            b.Color = color_black
-                        except Exception:
-                            pass
-                    cell.HorizontalAlignment = xlCenter
-                    cell.VerticalAlignment = xlCenter
-                    cell.WrapText = True
-
-            except Exception as row_error:
-                logger.error(f"Error processing row {row}: {row_error}")
-                continue
+                if l_E > 0 and s_E + l_E - 1 <= total_len:
+                    fE = cell_desc.GetCharacters(s_E, l_E).Font
+                    fE.Size = 11
+                    fE.Bold = True
+                    fE.Color = color_black
+                    fE.Underline = -4142
+            except Exception as e:
+                logger.error(f"Error applying rich text/image for row {row}: {e}")
 
         # --- B. TOTALS & FOOTER ---
         try:
