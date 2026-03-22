@@ -1526,15 +1526,16 @@ class DuckDBService:
                 SELECT ticket_number, assigned_to, ticket_status, created_at, activity_logs, received_at 
                 FROM email_extractions
             """
-            all_tickets = self.connection.execute(tickets_query).fetchall()
+            conn = self.cloud_connection if self.cloud_connection else self.connection
+            all_tickets = conn.execute(tickets_query).fetchall()
             
             # 3. Pre-fetch counts for Quotations and Orders grouped by ticket_number
             # Quotations
-            q_counts = self.connection.execute("SELECT ticket_number, COUNT(*) FROM quotations GROUP BY ticket_number").fetchall()
+            q_counts = conn.execute("SELECT ticket_number, COUNT(*) FROM quotations GROUP BY ticket_number").fetchall()
             quotations_map = {row[0]: row[1] for row in q_counts}
             
             # Orders
-            o_counts = self.connection.execute("SELECT ticket_number, COUNT(*) FROM cpo_orders GROUP BY ticket_number").fetchall()
+            o_counts = conn.execute("SELECT ticket_number, COUNT(*) FROM cpo_orders GROUP BY ticket_number").fetchall()
             orders_map = {row[0]: row[1] for row in o_counts}
 
             # --- Date Filtering Setup ---
@@ -2132,7 +2133,8 @@ class DuckDBService:
                 params.append(end_date)
 
             query += " ORDER BY created_at DESC"
-            rows = self.connection.execute(query, params).fetchall()
+            conn = self.cloud_connection if self.cloud_connection else self.connection
+            rows = conn.execute(query, params).fetchall()
 
             # --- Build ticket list with joined file data ---
             tickets = []
@@ -2413,15 +2415,16 @@ class DuckDBService:
                 query += " AND COALESCE(received_at, created_at) <= ?"
                 params.append(end_date)
 
-            all_tickets = self.connection.execute(query, params).fetchall()
+            conn = self.cloud_connection if self.cloud_connection else self.connection
+            all_tickets = conn.execute(query, params).fetchall()
 
             # --- Pre-fetch quotation and CPO amounts grouped by ticket_number ---
-            q_data = self.connection.execute(
+            q_data = conn.execute(
                 "SELECT ticket_number, COUNT(*), COALESCE(SUM(CAST(NULLIF(REGEXP_REPLACE(amount, '[^0-9.]', '', 'g'), '') AS DOUBLE)), 0) FROM quotations GROUP BY ticket_number"
             ).fetchall()
             quotation_map = {row[0]: {'count': row[1], 'total': row[2]} for row in q_data}
 
-            c_data = self.connection.execute(
+            c_data = conn.execute(
                 "SELECT ticket_number, COUNT(*), COALESCE(SUM(CAST(NULLIF(REGEXP_REPLACE(amount, '[^0-9.]', '', 'g'), '') AS DOUBLE)), 0) FROM cpo_orders GROUP BY ticket_number"
             ).fetchall()
             cpo_map = {row[0]: {'count': row[1], 'total': row[2]} for row in c_data}
