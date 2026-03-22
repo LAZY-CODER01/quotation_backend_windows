@@ -8,6 +8,8 @@ import os
 import threading
 import json
 import uuid
+import time
+from datetime import datetime, timedelta
 from app.utils.helpers import get_uae_time
 from flask import Flask, jsonify, send_file, request, current_app
 from flask_cors import CORS
@@ -765,6 +767,7 @@ def create_flask_app():
             db = DuckDBService()
             if db.connect():
                 db.connection.execute('DELETE FROM email_extractions')
+                db._cloud_execute('DELETE FROM email_extractions')
                 db.disconnect()
                 return jsonify({'success': True, 'message': 'Database cleared'})
             return jsonify({'error': 'DB connection failed'}), 500
@@ -1450,14 +1453,55 @@ def create_flask_app():
             return jsonify({'error': str(e)}), 500
 
 
+    @app.route('/api/admin/sync', methods=['POST'])
+    @jwt_required(roles=['ADMIN'])
+    def trigger_manual_sync():
+        """Admin endpoint to manually trigger cloud-to-local sync."""
+        try:
+            db = DuckDBService()
+            if db.connect():
+                db.sync_from_cloud()
+                db.disconnect()
+                return jsonify({'success': True, 'message': 'Sync completed successfully'})
+            return jsonify({'error': 'DB connection failed'}), 500
+        except Exception as e:
+            logging.error(f"Manual sync error: {e}")
+            return jsonify({'error': str(e)}), 500
+
     # Proxy Fix for Docker/Reverse Proxy
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
     
     # Start Monitoring on App Startup
-    # Start Monitoring on App Startup
     start_company_gmail_monitoring()
 
-    
+    # --- Bootstrap Local Cache & Start Nightly Sync ---
+    def _bootstrap_and_schedule_sync():
+        """Bootstrap local cache from cloud on first run, then schedule nightly sync."""
+        try:
+            db = DuckDBService()
+            if db.connect():
+                db.bootstrap_local_cache()
+                db.disconnect()
+                logging.info("Local cache bootstrap complete.")
+        except Exception as e:
+            logging.error(f"Bootstrap error: {e}")
+
+        # Schedule nightly sync loop
+        while True:
+            try:
+                time.sleep(24 * 60 * 60)  # Wait 24 hours
+                logging.info("Nightly sync starting...")
+                db = DuckDBService()
+                if db.connect():
+                    db.sync_from_cloud()
+                    db.disconnect()
+                    logging.info("Nightly sync completed.")
+            except Exception as e:
+                logging.error(f"Nightly sync error: {e}")
+
+    sync_thread = threading.Thread(target=_bootstrap_and_schedule_sync, daemon=True)
+    sync_thread.start()
+
     return app
 
     

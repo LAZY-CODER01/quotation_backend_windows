@@ -24,42 +24,81 @@ class DuckDBService:
     def __init__(self):
         """
         Initialize DuckDB connection.
-        Connects to MotherDuck if token is present, otherwise falls back to local file.
+        Uses a LOCAL DuckDB file as the primary connection for fast, unlimited-compute reads/writes.
+        Maintains a SECONDARY connection to MotherDuck for cloud archival (dual-write).
         """
         self.token = os.getenv('MOTHERDUCK_TOKEN')
-        
+
+        # LOCAL DuckDB (primary — fast, recent data)
+        self.local_db_path = 'local_cache.duckdb'
+
+        # MotherDuck Cloud (secondary — long-term archive)
         if self.token:
-            #   Connect to MotherDuck Cloud
-            self.db_path = f'md:snapquote_db?motherduck_token={self.token}'
-            self.is_cloud = True
-            logger.info(" Configured for MotherDuck Cloud Database")
+            self.cloud_db_path = f'md:snapquote_db?motherduck_token={self.token}'
+            logger.info("Configured for hybrid storage: local_cache.duckdb + MotherDuck Cloud")
         else:
-            # ⚠️ Fallback for local development
-            self.db_path = 'local_dev.duckdb'
-            self.is_cloud = False
-            logger.warning(" MOTHERDUCK_TOKEN not found. Using local file 'local_dev.duckdb'")
-            
-        self.connection = None
+            self.cloud_db_path = None
+            logger.warning("MOTHERDUCK_TOKEN not found. Running local-only mode (local_cache.duckdb)")
+
+        self.is_cloud = self.cloud_db_path is not None
+        self.connection = None        # PRIMARY → local
+        self.cloud_connection = None   # SECONDARY → MotherDuck
 
     def connect(self):
-        """Establish connection to the database."""
+        """Establish connections to local DB (primary) and MotherDuck (secondary)."""
         try:
-            self.connection = duckdb.connect(self.db_path)
-            self.create_table() 
+            # 1. Open LOCAL connection (primary — always)
+            self.connection = duckdb.connect(self.local_db_path)
+            logger.info(f"Connected to local cache: {self.local_db_path}")
+
+            # 2. Open CLOUD connection (secondary — if token exists)
+            if self.cloud_db_path:
+                try:
+                    self.cloud_connection = duckdb.connect(self.cloud_db_path)
+                    logger.info("Connected to MotherDuck cloud")
+                except Exception as cloud_err:
+                    logger.error(f"MotherDuck connection failed (continuing local-only): {cloud_err}")
+                    self.cloud_connection = None
+
+            # 3. Create tables on LOCAL
+            self.create_table()
+
+            # 4. Create tables on CLOUD (schema parity)
+            if self.cloud_connection:
+                try:
+                    self._create_table_on_connection(self.cloud_connection)
+                except Exception as schema_err:
+                    logger.warning(f"Cloud schema setup warning: {schema_err}")
+
+            # 5. Bootstrap local cache from cloud on first run
+            self.bootstrap_local_cache()
+
             return True
         except Exception as e:
-            logger.error(f" Database connection error: {str(e)}")
+            logger.error(f"Database connection error: {str(e)}")
             return False
 
     def disconnect(self):
-        """Close the database connection."""
-        if self.connection:
-            try:
-                self.connection.close()
-            except Exception as e:
-                logger.error(f"Error closing connection: {str(e)}")
-            finally:
-                self.connection = None
+        """Close both local and cloud database connections."""
+        for conn_name, conn in [("local", self.connection), ("cloud", self.cloud_connection)]:
+            if conn:
+                try:
+                    conn.close()
+                except Exception as e:
+                    logger.error(f"Error closing {conn_name} connection: {str(e)}")
+        self.connection = None
+        self.cloud_connection = None
+
+    def _cloud_execute(self, query, params=None, commit=True):
+        """Best-effort execution on cloud connection. Failures are logged but don't break the app."""
+        if not self.cloud_connection:
+            return
+        try:
+            self.cloud_connection.execute(query, params or [])
+            if commit:
+                self.cloud_connection.commit()
+        except Exception as e:
+            logger.warning(f"Cloud replication failed: {e}")
 
     def create_table(self):
         """Create necessary tables (Emails + Auth Tokens + Users + Files)."""
@@ -181,6 +220,279 @@ class DuckDBService:
                 else:
                     logger.error(f"Failed to add column {column} to {table}: {e}")
 
+    def _create_table_on_connection(self, conn):
+        """Create schema on a specific connection (used for cloud schema parity)."""
+        try:
+            conn.execute("CREATE SEQUENCE IF NOT EXISTS id_sequence START 1;")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS email_extractions (
+                    id INTEGER DEFAULT nextval('id_sequence'),
+                    gmail_id VARCHAR PRIMARY KEY,
+                    ticket_number VARCHAR UNIQUE,
+                    ticket_status VARCHAR DEFAULT 'INBOX',
+                    ticket_priority VARCHAR DEFAULT 'NORMAL',
+                    quotation_files JSON DEFAULT '[]',
+                    cpo_files JSON DEFAULT '[]',
+                    activity_logs JSON DEFAULT '[]',
+                    quotation_amount VARCHAR,
+                    sender VARCHAR,
+                    company_name VARCHAR,
+                    received_at TIMESTAMP,
+                    subject VARCHAR,
+                    body_text TEXT,
+                    extraction_result JSON,
+                    extraction_status VARCHAR,
+                    updated_at TIMESTAMP,
+                    assigned_to VARCHAR,
+                    internal_notes JSON DEFAULT '[]',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    sent_at TIMESTAMP,
+                    confirmed_at TIMESTAMP,
+                    closed_at TIMESTAMP
+                );
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS quotations (
+                    id INTEGER PRIMARY KEY DEFAULT nextval('id_sequence'),
+                    ticket_number VARCHAR,
+                    reference_id VARCHAR,
+                    file_name VARCHAR,
+                    file_url VARCHAR,
+                    amount VARCHAR,
+                    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (ticket_number) REFERENCES email_extractions(ticket_number)
+                );
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS cpo_orders (
+                    id INTEGER PRIMARY KEY DEFAULT nextval('id_sequence'),
+                    ticket_number VARCHAR,
+                    reference_id VARCHAR,
+                    file_name VARCHAR,
+                    file_url VARCHAR,
+                    amount VARCHAR,
+                    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (ticket_number) REFERENCES email_extractions(ticket_number)
+                );
+            """)
+            conn.execute("CREATE TABLE IF NOT EXISTS user_tokens (user_id VARCHAR PRIMARY KEY, token_json JSON, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+            conn.execute("CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), username VARCHAR UNIQUE, password_hash VARCHAR, employee_code VARCHAR UNIQUE, role VARCHAR DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+            conn.execute("CREATE TABLE IF NOT EXISTS company_tokens (id INTEGER PRIMARY KEY, token_json TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS clients (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    name VARCHAR,
+                    business_name VARCHAR,
+                    email VARCHAR UNIQUE,
+                    phone VARCHAR,
+                    tags JSON DEFAULT '[]',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            logger.info("Cloud schema initialized successfully")
+        except Exception as e:
+            logger.error(f"Cloud schema creation error: {e}")
+
+    def bootstrap_local_cache(self):
+        """One-time seed: copy last 5 days from MotherDuck → local on first startup."""
+        if not self.cloud_connection:
+            return
+
+        try:
+            # Check if local is empty
+            count = self.connection.execute("SELECT COUNT(*) FROM email_extractions").fetchone()[0]
+            if count > 0:
+                logger.info(f"Local cache already has {count} records, skipping bootstrap")
+                return
+
+            cutoff = get_uae_time() - timedelta(days=5)
+            total_synced = 0
+
+            # 1. Sync email_extractions (last 5 days)
+            try:
+                rows = self.cloud_connection.execute(
+                    "SELECT * FROM email_extractions WHERE received_at >= ? OR created_at >= ?",
+                    [cutoff, cutoff]
+                ).fetchall()
+                if rows:
+                    cols = [desc[0] for desc in self.cloud_connection.execute(
+                        "SELECT * FROM email_extractions LIMIT 0"
+                    ).description]
+                    placeholders = ', '.join(['?'] * len(cols))
+                    for row in rows:
+                        try:
+                            self.connection.execute(
+                                f"INSERT OR REPLACE INTO email_extractions ({', '.join(cols)}) VALUES ({placeholders})",
+                                list(row)
+                            )
+                        except Exception as row_err:
+                            logger.warning(f"Bootstrap row insert error: {row_err}")
+                    total_synced += len(rows)
+            except Exception as e:
+                logger.warning(f"Bootstrap email_extractions sync: {e}")
+
+            # 2. Sync quotations for those tickets
+            try:
+                rows = self.cloud_connection.execute(
+                    "SELECT q.* FROM quotations q JOIN email_extractions e ON q.ticket_number = e.ticket_number WHERE e.received_at >= ? OR e.created_at >= ?",
+                    [cutoff, cutoff]
+                ).fetchall()
+                if rows:
+                    cols = [desc[0] for desc in self.cloud_connection.execute("SELECT * FROM quotations LIMIT 0").description]
+                    placeholders = ', '.join(['?'] * len(cols))
+                    for row in rows:
+                        try:
+                            self.connection.execute(
+                                f"INSERT OR REPLACE INTO quotations ({', '.join(cols)}) VALUES ({placeholders})",
+                                list(row)
+                            )
+                        except:
+                            pass
+            except Exception as e:
+                logger.warning(f"Bootstrap quotations sync: {e}")
+
+            # 3. Sync cpo_orders for those tickets
+            try:
+                rows = self.cloud_connection.execute(
+                    "SELECT c.* FROM cpo_orders c JOIN email_extractions e ON c.ticket_number = e.ticket_number WHERE e.received_at >= ? OR e.created_at >= ?",
+                    [cutoff, cutoff]
+                ).fetchall()
+                if rows:
+                    cols = [desc[0] for desc in self.cloud_connection.execute("SELECT * FROM cpo_orders LIMIT 0").description]
+                    placeholders = ', '.join(['?'] * len(cols))
+                    for row in rows:
+                        try:
+                            self.connection.execute(
+                                f"INSERT OR REPLACE INTO cpo_orders ({', '.join(cols)}) VALUES ({placeholders})",
+                                list(row)
+                            )
+                        except:
+                            pass
+            except Exception as e:
+                logger.warning(f"Bootstrap cpo_orders sync: {e}")
+
+            # 4. Sync small tables entirely: users, user_tokens, company_tokens, clients
+            for table in ['users', 'user_tokens', 'company_tokens', 'clients']:
+                try:
+                    rows = self.cloud_connection.execute(f"SELECT * FROM {table}").fetchall()
+                    if rows:
+                        cols = [desc[0] for desc in self.cloud_connection.execute(f"SELECT * FROM {table} LIMIT 0").description]
+                        placeholders = ', '.join(['?'] * len(cols))
+                        for row in rows:
+                            try:
+                                self.connection.execute(
+                                    f"INSERT OR REPLACE INTO {table} ({', '.join(cols)}) VALUES ({placeholders})",
+                                    list(row)
+                                )
+                            except:
+                                pass
+                except Exception as e:
+                    logger.warning(f"Bootstrap {table} sync: {e}")
+
+            self.connection.commit()
+            logger.info(f"Bootstrapped local cache with {total_synced} email records from MotherDuck")
+
+        except Exception as e:
+            logger.error(f"Bootstrap error: {e}")
+
+    def sync_from_cloud(self):
+        """Nightly sync: pull last 5 days from MotherDuck into local, delete older local data."""
+        if not self.cloud_connection:
+            logger.warning("No cloud connection available for sync")
+            return
+
+        try:
+            cutoff = get_uae_time() - timedelta(days=5)
+            logger.info(f"Starting nightly sync. Cutoff: {cutoff}")
+
+            # 1. Fetch recent email_extractions from cloud
+            try:
+                rows = self.cloud_connection.execute(
+                    "SELECT * FROM email_extractions WHERE received_at >= ? OR created_at >= ?",
+                    [cutoff, cutoff]
+                ).fetchall()
+                if rows:
+                    cols = [desc[0] for desc in self.cloud_connection.execute(
+                        "SELECT * FROM email_extractions LIMIT 0"
+                    ).description]
+                    placeholders = ', '.join(['?'] * len(cols))
+                    for row in rows:
+                        try:
+                            self.connection.execute(
+                                f"INSERT OR REPLACE INTO email_extractions ({', '.join(cols)}) VALUES ({placeholders})",
+                                list(row)
+                            )
+                        except Exception as row_err:
+                            logger.warning(f"Sync row upsert error: {row_err}")
+                    logger.info(f"Synced {len(rows)} email records from cloud")
+            except Exception as e:
+                logger.warning(f"Sync email_extractions: {e}")
+
+            # 2. Sync quotations and cpo_orders for recent tickets
+            for table in ['quotations', 'cpo_orders']:
+                try:
+                    rows = self.cloud_connection.execute(
+                        f"SELECT t.* FROM {table} t JOIN email_extractions e ON t.ticket_number = e.ticket_number WHERE e.received_at >= ? OR e.created_at >= ?",
+                        [cutoff, cutoff]
+                    ).fetchall()
+                    if rows:
+                        cols = [desc[0] for desc in self.cloud_connection.execute(f"SELECT * FROM {table} LIMIT 0").description]
+                        placeholders = ', '.join(['?'] * len(cols))
+                        for row in rows:
+                            try:
+                                self.connection.execute(
+                                    f"INSERT OR REPLACE INTO {table} ({', '.join(cols)}) VALUES ({placeholders})",
+                                    list(row)
+                                )
+                            except:
+                                pass
+                except Exception as e:
+                    logger.warning(f"Sync {table}: {e}")
+
+            # 3. Fully sync small tables (users, user_tokens, company_tokens, clients)
+            for table in ['users', 'user_tokens', 'company_tokens', 'clients']:
+                try:
+                    # Clear and re-populate to ensure consistency
+                    self.connection.execute(f"DELETE FROM {table}")
+                    rows = self.cloud_connection.execute(f"SELECT * FROM {table}").fetchall()
+                    if rows:
+                        cols = [desc[0] for desc in self.cloud_connection.execute(f"SELECT * FROM {table} LIMIT 0").description]
+                        placeholders = ', '.join(['?'] * len(cols))
+                        for row in rows:
+                            try:
+                                self.connection.execute(
+                                    f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders})",
+                                    list(row)
+                                )
+                            except:
+                                pass
+                except Exception as e:
+                    logger.warning(f"Sync {table}: {e}")
+
+            # 4. Delete local data older than 5 days
+            try:
+                self.connection.execute(
+                    "DELETE FROM quotations WHERE ticket_number IN (SELECT ticket_number FROM email_extractions WHERE received_at < ? AND created_at < ?)",
+                    [cutoff, cutoff]
+                )
+                self.connection.execute(
+                    "DELETE FROM cpo_orders WHERE ticket_number IN (SELECT ticket_number FROM email_extractions WHERE received_at < ? AND created_at < ?)",
+                    [cutoff, cutoff]
+                )
+                self.connection.execute(
+                    "DELETE FROM email_extractions WHERE received_at < ? AND created_at < ?",
+                    [cutoff, cutoff]
+                )
+                logger.info("Cleaned up local records older than 5 days")
+            except Exception as e:
+                logger.warning(f"Cleanup old local data: {e}")
+
+            self.connection.commit()
+            logger.info("Nightly sync completed successfully")
+
+        except Exception as e:
+            logger.error(f"Nightly sync error: {e}")
+
     # --- Ticket Logic ---
 
     def _generate_next_ticket_number(self):
@@ -287,14 +599,16 @@ class DuckDBService:
                     updated_at = EXCLUDED.updated_at,
                     company_name = COALESCE(EXCLUDED.company_name, email_extractions.company_name)
             """
-            self.connection.execute(query, [
+            params = [
                 email_data.get('gmail_id'), ticket_number, priority,
                 final_sender, email_data.get('received_at'),
                 email_data.get('subject', ''), body_text,
                 extraction_result_json, status, get_uae_time(), assigned_to_user, get_uae_time(),
                 extracted_company
-            ])
+            ]
+            self.connection.execute(query, params)
             self.connection.commit()
+            self._cloud_execute(query, params)
 
             # Auto-add company as client from AI extraction if not already present
             self.ensure_client_from_extraction(email_data, extraction_result)
@@ -332,7 +646,7 @@ class DuckDBService:
                 ) VALUES (?, ?, 'INBOX', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', '[]', '[]', ?)
             """
             
-            self.connection.execute(query, [
+            params = [
                 gmail_id, 
                 ticket_number, 
                 ticket_data.get('priority', 'NORMAL'),
@@ -346,9 +660,10 @@ class DuckDBService:
                 user.get('username'), 
                 get_uae_time(),
                 ticket_data.get('company_name')
-            ])
-            
+            ]
+            self.connection.execute(query, params)
             self.connection.commit()
+            self._cloud_execute(query, params)
             
             # Log Activity
             self.add_activity_log(gmail_id, "TICKET_CREATED", "Ticket created manually", user.get('username'))
@@ -373,19 +688,25 @@ class DuckDBService:
                 ts_col = 'closed_at'
 
             if ts_col:
-                self.connection.execute(f"""
+                q = f"""
                     UPDATE email_extractions 
                     SET ticket_status = ?, updated_at = ?, {ts_col} = ?
                     WHERE ticket_number = ?
-                """, [new_status, now, now, ticket_number])
+                """
+                p = [new_status, now, now, ticket_number]
+                self.connection.execute(q, p)
+                self.connection.commit()
+                self._cloud_execute(q, p)
             else:
-                self.connection.execute("""
+                q = """
                     UPDATE email_extractions 
                     SET ticket_status = ?, updated_at = ?
                     WHERE ticket_number = ?
-                """, [new_status, now, ticket_number])
-
-            self.connection.commit()
+                """
+                p = [new_status, now, ticket_number]
+                self.connection.execute(q, p)
+                self.connection.commit()
+                self._cloud_execute(q, p)
             return True
         except Exception as e:
             logger.error(f"Error updating ticket status: {e}")
@@ -596,9 +917,11 @@ class DuckDBService:
 
     def update_extraction(self, gmail_id, extraction_result):
         try:
-            self.connection.execute("UPDATE email_extractions SET extraction_result = ?, updated_at = ? WHERE gmail_id = ?", 
-                                  [json.dumps(extraction_result), get_uae_time(), gmail_id])
+            q = "UPDATE email_extractions SET extraction_result = ?, updated_at = ? WHERE gmail_id = ?"
+            p = [json.dumps(extraction_result), get_uae_time(), gmail_id]
+            self.connection.execute(q, p)
             self.connection.commit()
+            self._cloud_execute(q, p)
             return True
         except: return False
 
@@ -614,8 +937,10 @@ class DuckDBService:
                     token_json = EXCLUDED.token_json,
                     updated_at = EXCLUDED.updated_at
             """
-            self.connection.execute(query, [user_id, token_json_str, current_time])
+            params = [user_id, token_json_str, current_time]
+            self.connection.execute(query, params)
             self.connection.commit()
+            self._cloud_execute(query, params)
             return True
         except Exception as e:
             logger.error(f"Error saving user token: {str(e)}")
@@ -633,8 +958,11 @@ class DuckDBService:
 
     def delete_user_token(self, user_id):
         try:
-            self.connection.execute("DELETE FROM user_tokens WHERE user_id = ?", [user_id])
+            q = "DELETE FROM user_tokens WHERE user_id = ?"
+            p = [user_id]
+            self.connection.execute(q, p)
             self.connection.commit()
+            self._cloud_execute(q, p)
             return True
         except Exception as e:
             logger.error(f"Error deleting user token: {str(e)}")
@@ -677,8 +1005,11 @@ class DuckDBService:
 
     def update_user_password(self, user_id, new_password):
         try:
-            self.connection.execute("UPDATE users SET password_hash = ? WHERE id = ?", [new_password, user_id])
+            q = "UPDATE users SET password_hash = ? WHERE id = ?"
+            p = [new_password, user_id]
+            self.connection.execute(q, p)
             self.connection.commit()
+            self._cloud_execute(q, p)
             return True
         except Exception as e:
             logger.error(f"Error updating password: {e}")
@@ -711,6 +1042,7 @@ class DuckDBService:
             
             self.connection.execute(query, params)
             self.connection.commit()
+            self._cloud_execute(query, params)
             return True
         except Exception as e:
             logger.error(f"Error updating user details: {e}")
@@ -719,9 +1051,14 @@ class DuckDBService:
     def delete_user(self, user_id):
         try:
             # Also delete associated token
-            self.connection.execute("DELETE FROM user_tokens WHERE user_id = ?", [user_id])
-            self.connection.execute("DELETE FROM users WHERE id = ?", [user_id])
+            q1 = "DELETE FROM user_tokens WHERE user_id = ?"
+            q2 = "DELETE FROM users WHERE id = ?"
+            p = [user_id]
+            self.connection.execute(q1, p)
+            self.connection.execute(q2, p)
             self.connection.commit()
+            self._cloud_execute(q1, p)
+            self._cloud_execute(q2, p)
             return True
         except Exception as e:
             logger.error(f"Error deleting user: {e}")
@@ -755,6 +1092,7 @@ class DuckDBService:
             """
             result = self.connection.execute(q, [username, password_hash, employee_code, role, get_uae_time()]).fetchone()
             self.connection.commit()
+            self._cloud_execute(q, [username, password_hash, employee_code, role, get_uae_time()])
             if result: return str(result[0])
             return None
         except Exception as e:
@@ -765,13 +1103,16 @@ class DuckDBService:
 
     def save_company_token(self, token_json: str):
         try:
-            self.connection.execute("""
+            q = """
                 INSERT INTO company_tokens (id, token_json)
                 VALUES (1, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     token_json = excluded.token_json
-            """, [token_json])
+            """
+            p = [token_json]
+            self.connection.execute(q, p)
             self.connection.commit()
+            self._cloud_execute(q, p)
             return True
         except Exception as e:
             logger.error(f"Error saving company token: {str(e)}")
@@ -787,8 +1128,10 @@ class DuckDBService:
 
     def delete_company_token(self):
         try:
-            self.connection.execute("DELETE FROM company_tokens WHERE id = 1")
+            q = "DELETE FROM company_tokens WHERE id = 1"
+            self.connection.execute(q)
             self.connection.commit()
+            self._cloud_execute(q)
             return True
         except Exception as e:
             logger.error(f"Error deleting company token: {str(e)}")
@@ -802,12 +1145,15 @@ class DuckDBService:
                 logger.warning(f"Invalid priority '{new_priority}'")
                 return False
 
-            self.connection.execute("""
+            q = """
                 UPDATE email_extractions 
                 SET ticket_priority = ?, updated_at = ?
                 WHERE gmail_id = ?
-            """, [new_priority, get_uae_time(), gmail_id])
+            """
+            p = [new_priority, get_uae_time(), gmail_id]
+            self.connection.execute(q, p)
             self.connection.commit()
+            self._cloud_execute(q, p)
             return True
         except Exception as e:
             logger.error(f"Error updating ticket priority: {e}")
@@ -910,17 +1256,20 @@ class DuckDBService:
 
             # 3. Insert into quotations table
             #   FIX: Use file_name, file_url
-            self.connection.execute("""
+            q_insert = """
                 INSERT INTO quotations (id, ticket_number, reference_id, file_name, file_url, amount, uploaded_at)
                 VALUES (nextval('id_sequence'), ?, ?, ?, ?, ?, ?)
-            """, [ticket_number, reference_id, file_metadata.get('name'), file_metadata.get('url'), file_metadata.get('amount'), get_uae_time()])
+            """
+            p_insert = [ticket_number, reference_id, file_metadata.get('name'), file_metadata.get('url'), file_metadata.get('amount'), get_uae_time()]
+            self.connection.execute(q_insert, p_insert)
             
             # 4. Update Status and Timestamp on Main Ticket
-            self.connection.execute(
-                "UPDATE email_extractions SET ticket_status = 'SENT', updated_at = ? WHERE gmail_id = ?", 
-                [get_uae_time(), gmail_id]
-            )
+            q_update = "UPDATE email_extractions SET ticket_status = 'SENT', updated_at = ? WHERE gmail_id = ?"
+            p_update = [get_uae_time(), gmail_id]
+            self.connection.execute(q_update, p_update)
             self.connection.commit()
+            self._cloud_execute(q_insert, p_insert)
+            self._cloud_execute(q_update, p_update)
             return True, "Success"
         except Exception as e:
             logger.error(f"Error adding quotation file: {e}")
@@ -930,8 +1279,11 @@ class DuckDBService:
         try:
             # Determine which table to update based on file_type
             table = "cpo_orders" if file_type == "cpo" else "quotations"
-            self.connection.execute(f"UPDATE {table} SET amount = ? WHERE id = ?", [amount, file_id])
+            q = f"UPDATE {table} SET amount = ? WHERE id = ?"
+            p = [amount, file_id]
+            self.connection.execute(q, p)
             self.connection.commit()
+            self._cloud_execute(q, p)
             return True
         except Exception as e:
             logger.error(f"Error updating file amount: {e}")
@@ -957,17 +1309,20 @@ class DuckDBService:
 
             # 3. Insert into cpo_orders table
             #   FIX: Use file_name, file_url
-            self.connection.execute("""
+            q_insert = """
                 INSERT INTO cpo_orders (id, ticket_number, reference_id, file_name, file_url, amount, uploaded_at)
                 VALUES (nextval('id_sequence'), ?, ?, ?, ?, ?, ?)
-            """, [ticket_number, reference_id, file_metadata.get('name'), file_metadata.get('url'), file_metadata.get('amount'), get_uae_time()])
+            """
+            p_insert = [ticket_number, reference_id, file_metadata.get('name'), file_metadata.get('url'), file_metadata.get('amount'), get_uae_time()]
+            self.connection.execute(q_insert, p_insert)
             
             # 4. Update Status and Timestamp on Main Ticket
-            self.connection.execute(
-                "UPDATE email_extractions SET ticket_status = 'ORDER_CONFIRMED', updated_at = ? WHERE gmail_id = ?", 
-                [get_uae_time(), gmail_id]
-            )
+            q_update = "UPDATE email_extractions SET ticket_status = 'ORDER_CONFIRMED', updated_at = ? WHERE gmail_id = ?"
+            p_update = [get_uae_time(), gmail_id]
+            self.connection.execute(q_update, p_update)
             self.connection.commit()
+            self._cloud_execute(q_insert, p_insert)
+            self._cloud_execute(q_update, p_update)
             return True, "Success"
         except Exception as e:
             logger.error(f"Error adding CPO file: {e}")
@@ -988,11 +1343,11 @@ class DuckDBService:
             # Append new note
             existing_notes.append(note_data)
             
-            self.connection.execute(
-                "UPDATE email_extractions SET internal_notes = ?, updated_at = ? WHERE gmail_id = ?", 
-                [json.dumps(existing_notes), get_uae_time(), gmail_id]
-            )
+            q = "UPDATE email_extractions SET internal_notes = ?, updated_at = ? WHERE gmail_id = ?"
+            p = [json.dumps(existing_notes), get_uae_time(), gmail_id]
+            self.connection.execute(q, p)
             self.connection.commit()
+            self._cloud_execute(q, p)
             return True
         except Exception as e:
             logger.error(f"Error adding note: {e}")
@@ -1025,11 +1380,11 @@ class DuckDBService:
             
             logs.append(new_log)
             
-            self.connection.execute(
-                "UPDATE email_extractions SET activity_logs = ? WHERE gmail_id = ?", 
-                [json.dumps(logs), gmail_id]
-            )
+            q = "UPDATE email_extractions SET activity_logs = ? WHERE gmail_id = ?"
+            p = [json.dumps(logs), gmail_id]
+            self.connection.execute(q, p)
             self.connection.commit()
+            self._cloud_execute(q, p)
             return new_log
         except Exception as e:
             logger.error(f"Error adding log: {e}")
@@ -1073,6 +1428,7 @@ class DuckDBService:
             
             self.connection.execute(query, values)
             self.connection.commit()
+            self._cloud_execute(query, values)
             return True
         except Exception as e:
             logger.error(f"Error updating ticket details: {e}")
@@ -1106,12 +1462,15 @@ class DuckDBService:
             return []    
     def assign_ticket(self, gmail_id, username):
         try:
-            self.connection.execute("""
+            q = """
                 UPDATE email_extractions 
                 SET assigned_to = ?, updated_at = ? 
                 WHERE gmail_id = ?
-            """, [username, get_uae_time(), gmail_id])
+            """
+            p = [username, get_uae_time(), gmail_id]
+            self.connection.execute(q, p)
             self.connection.commit()
+            self._cloud_execute(q, p)
             return True
         except Exception as e:
             logger.error(f"Error assigning ticket: {e}")
@@ -1120,8 +1479,11 @@ class DuckDBService:
     def delete_quotation_file(self, file_id):
         """Delete a quotation file from the database."""
         try:
-            self.connection.execute("DELETE FROM quotations WHERE id = ?", [file_id])
+            q = "DELETE FROM quotations WHERE id = ?"
+            p = [file_id]
+            self.connection.execute(q, p)
             self.connection.commit()
+            self._cloud_execute(q, p)
             return True
         except Exception as e:
             logger.error(f"Error deleting quotation file: {e}")
@@ -1130,8 +1492,11 @@ class DuckDBService:
     def delete_cpo_file(self, file_id):
         """Delete a CPO file from the database."""
         try:
-            self.connection.execute("DELETE FROM cpo_orders WHERE id = ?", [file_id])
+            q = "DELETE FROM cpo_orders WHERE id = ?"
+            p = [file_id]
+            self.connection.execute(q, p)
             self.connection.commit()
+            self._cloud_execute(q, p)
             return True
         except Exception as e:
             logger.error(f"Error deleting CPO file: {e}")
@@ -1558,13 +1923,15 @@ class DuckDBService:
             tags_json = json.dumps(client_data.get('tags', []))
             
             # Using DuckDB's returning clause if supported, else fetch
-            self.connection.execute(query, [
+            p = [
                 client_data.get('name'),
                 client_data.get('business_name'),
                 client_data.get('email'),
                 client_data.get('phone'),
                 tags_json
-            ])
+            ]
+            self.connection.execute(query, p)
+            self._cloud_execute(query, p)
             
             # Fetch the inserted row (assuming RETURNING works or we select it back)
             # DuckDB supports RETURNING via fetchone() on the result of execute()
