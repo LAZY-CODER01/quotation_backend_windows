@@ -384,12 +384,12 @@ class GmailService:
     def _combine_email_content(self, email_data):
         parts = [
             f"Subject: {email_data.get('subject', '')}",
-            f"Body:\n{email_data.get('body_text', '')}"
+            f"━━━ EMAIL BODY ━━━\n{email_data.get('body_text', '')}"
         ]
-        # Quick parse html for tables if needed? AI service handles text mostly.
-        # Attachments content
+        # Add each attachment with a clear section header
         if 'attachment_contents' in email_data:
-             parts.extend(email_data['attachment_contents'])
+            for i, att_content in enumerate(email_data['attachment_contents'], 1):
+                parts.append(f"━━━ ATTACHMENT {i} ━━━\n{att_content}")
         return "\n\n".join(parts)
 
     def _check_for_new_emails(self):

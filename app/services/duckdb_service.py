@@ -727,6 +727,68 @@ class DuckDBService:
             logger.error(f"Error getting gmail_id from ticket: {e}")
             return None
 
+    def _process_extraction_rows(self, rows, col_names, conn):
+        """Process raw DB rows into extraction dicts, fetching normalized files from the given connection."""
+        extractions = []
+        for row in rows:
+            item = dict(zip(col_names, row))
+
+            # Parse JSON fields safely
+            for field in ['extraction_result', 'internal_notes', 'activity_logs']:
+                if isinstance(item.get(field), str):
+                    try:
+                        item[field] = json.loads(item[field])
+                    except:
+                        item[field] = [] if field in ['internal_notes', 'activity_logs'] else {}
+
+            # --- Fetch Normalized Files from the SAME connection the ticket came from ---
+            try:
+                ticket_number = item.get('ticket_number')
+                if ticket_number:
+                    q_files = conn.execute("""
+                        SELECT id, file_name, file_url, amount, uploaded_at, reference_id 
+                        FROM quotations WHERE ticket_number = ?
+                    """, [ticket_number]).fetchall()
+
+                    item['quotation_files'] = [
+                        {
+                            'id': q[0], 
+                            'name': q[1], 
+                            'url': q[2], 
+                            'amount': q[3], 
+                            'uploaded_at': q[4].isoformat() if q[4] else None, 
+                            'reference_id': q[5]
+                        }
+                        for q in q_files
+                    ]
+
+                    c_files = conn.execute("""
+                        SELECT id, file_name, file_url, amount, uploaded_at, reference_id 
+                        FROM cpo_orders WHERE ticket_number = ?
+                    """, [ticket_number]).fetchall()
+
+                    item['cpo_files'] = [
+                        {
+                            'id': c[0], 
+                            'name': c[1], 
+                            'url': c[2], 
+                            'amount': c[3], 
+                            'uploaded_at': c[4].isoformat() if c[4] else None, 
+                            'reference_id': c[5]
+                        }
+                        for c in c_files
+                    ]
+                else:
+                    item['quotation_files'] = []
+                    item['cpo_files'] = []
+            except Exception as e:
+                logger.warning(f"Failed to fetch linked files for {item.get('ticket_number')}: {e}")
+                item['quotation_files'] = []
+                item['cpo_files'] = []
+
+            extractions.append(item)
+        return extractions
+
     def get_all_extractions(self, limit=1000, status_filter=None, user_role='user', username=None, days=None, before_date=None, since=None, start_date=None, end_date=None):
         try:
             #   Added quotation_files and quotation_amount to the list
@@ -740,28 +802,28 @@ class DuckDBService:
             query = f"SELECT {cols} FROM email_extractions WHERE 1=1"
             params = []
 
+            # Track whether this is a date-range query (eligible for cloud merge)
+            is_date_range_query = False
+
             # 1. Delta Sync (Highest Priority)
             if since:
-                # Fetch records UPDATED since 'since' timestamp
                 query += " AND updated_at > ?"
                 try:
-                    # Ensure format matches DB timestamp if needed, or rely on flexible parsing
                     params.append(since)
                 except:
                     pass
 
             # 2. Date Range Filtering (Only if not doing a pure delta sync)
             else:
-                #   Explicit Date Range (New Feature)
+                #   Explicit Date Range
                 if start_date and end_date:
                     query += " AND received_at >= ? AND received_at <= ?"
                     params.append(start_date)
                     params.append(end_date)
+                    is_date_range_query = True
                 
                 elif days:
                     try:
-                        # Postgres/DuckDB syntax: CURRENT_TIMESTAMP - INTERVAL 'X days'
-                        # But parameterizing the number of days safely:
                         query += f" AND received_at >= CURRENT_DATE - INTERVAL {int(days)} DAY"
                     except:
                         pass
@@ -782,138 +844,119 @@ class DuckDBService:
             query += " ORDER BY received_at DESC LIMIT ?"
             params.append(limit)
 
-            result = self.connection.execute(query, params).fetchall()
-            
             col_names = [c.strip() for c in cols.split(',')]
-            extractions = []
-            
-            for row in result:
-                item = dict(zip(col_names, row))
-                
-                # Parse JSON fields safely
-                for field in ['extraction_result', 'internal_notes', 'activity_logs']:
-                    if isinstance(item.get(field), str):
-                        try:
-                            item[field] = json.loads(item[field])
-                        except:
-                            item[field] = [] if field in ['internal_notes', 'activity_logs'] else {}
-                
-                # --- Fetch Normalized Files ---
+
+            # --- Query LOCAL DB ---
+            local_rows = self.connection.execute(query, params).fetchall()
+            local_extractions = self._process_extraction_rows(local_rows, col_names, self.connection)
+
+            # --- Merge with CLOUD (MotherDuck) for date-range queries ---
+            if is_date_range_query and self.cloud_connection:
                 try:
-                    ticket_number = item.get('ticket_number')
-                    if ticket_number:
-                        # Fetch Quotations
-                        #   FIX: Fetch file_name/file_url and alias to name/url for frontend compatibility
-                        q_files = self.connection.execute("""
-                            SELECT id, file_name, file_url, amount, uploaded_at, reference_id 
-                            FROM quotations WHERE ticket_number = ?
-                        """, [ticket_number]).fetchall()
-                        
-                        item['quotation_files'] = [
-                            {
-                                'id': q[0], 
-                                'name': q[1], 
-                                'url': q[2], 
-                                'amount': q[3], 
-                                'uploaded_at': q[4].isoformat() if q[4] else None, 
-                                'reference_id': q[5]
-                            }
-                            for q in q_files
-                        ]
+                    cloud_rows = self.cloud_connection.execute(query, params).fetchall()
+                    cloud_extractions = self._process_extraction_rows(cloud_rows, col_names, self.cloud_connection)
 
-                        # Fetch CPO Files
-                        c_files = self.connection.execute("""
-                            SELECT id, file_name, file_url, amount, uploaded_at, reference_id 
-                            FROM cpo_orders WHERE ticket_number = ?
-                        """, [ticket_number]).fetchall()
-                        
-                        item['cpo_files'] = [
-                            {
-                                'id': c[0], 
-                                'name': c[1], 
-                                'url': c[2], 
-                                'amount': c[3], 
-                                'uploaded_at': c[4].isoformat() if c[4] else None, 
-                                'reference_id': c[5]
-                            }
-                            for c in c_files
-                        ]
-                    else:
-                        item['quotation_files'] = []
-                        item['cpo_files'] = []
-                except Exception as e:
-                    #   FIX: Log specific error but don't crash
-                    logger.warning(f"Failed to fetch linked files for {ticket_number}: {e}")
-                    item['quotation_files'] = []
-                    item['cpo_files'] = []
+                    # Deduplicate: local takes priority, add cloud-only tickets
+                    seen_gmail_ids = {item['gmail_id'] for item in local_extractions}
+                    for cloud_item in cloud_extractions:
+                        if cloud_item['gmail_id'] not in seen_gmail_ids:
+                            local_extractions.append(cloud_item)
+                            seen_gmail_ids.add(cloud_item['gmail_id'])
 
-                extractions.append(item)
-            return extractions
+                    # Re-sort merged results by received_at descending
+                    local_extractions.sort(
+                        key=lambda x: x.get('received_at') or '',
+                        reverse=True
+                    )
+
+                    # Apply limit after merge
+                    local_extractions = local_extractions[:limit]
+
+                    logger.info(f"Merged {len(cloud_extractions)} cloud + {len(local_rows)} local tickets (deduplicated to {len(local_extractions)})")
+                except Exception as cloud_err:
+                    logger.warning(f"Cloud query failed during merge (returning local only): {cloud_err}")
+
+            return local_extractions
         except Exception as e:
             logger.error(f"Error getting extractions: {str(e)}")
             return []
 
+    def _fetch_single_extraction(self, gmail_id, conn):
+        """Fetch a single extraction from the given connection, with normalized files."""
+        cols = """
+            id, gmail_id, ticket_number, ticket_status, ticket_priority, 
+            quotation_files, quotation_amount,
+            sender, company_name, received_at, subject, body_text, internal_notes, activity_logs,
+            extraction_result, extraction_status, updated_at, created_at, assigned_to
+        """
+        result = conn.execute(
+            f"SELECT {cols} FROM email_extractions WHERE gmail_id = ?", 
+            [gmail_id]
+        ).fetchone()
+
+        if not result:
+            return None
+
+        col_names = [c.strip() for c in cols.split(',')]
+        item = dict(zip(col_names, result))
+
+        # Parse JSON fields safely
+        for field in ['extraction_result', 'internal_notes', 'activity_logs']:
+            if isinstance(item.get(field), str):
+                try:
+                    item[field] = json.loads(item[field])
+                except:
+                    item[field] = [] if field in ['internal_notes', 'activity_logs'] else {}
+
+        # --- Fetch Normalized Files from the SAME connection ---
+        try:
+            ticket_number = item.get('ticket_number')
+            if ticket_number:
+                q_files = conn.execute("""
+                    SELECT id, file_name, file_url, amount, uploaded_at, reference_id 
+                    FROM quotations WHERE ticket_number = ?
+                """, [ticket_number]).fetchall()
+                item['quotation_files'] = [
+                    {'id': q[0], 'name': q[1], 'url': q[2], 'amount': q[3], 'uploaded_at': q[4].isoformat() if q[4] else None, 'reference_id': q[5]}
+                    for q in q_files
+                ]
+
+                c_files = conn.execute("""
+                    SELECT id, file_name, file_url, amount, uploaded_at, reference_id 
+                    FROM cpo_orders WHERE ticket_number = ?
+                """, [ticket_number]).fetchall()
+                item['cpo_files'] = [
+                    {'id': c[0], 'name': c[1], 'url': c[2], 'amount': c[3], 'uploaded_at': c[4].isoformat() if c[4] else None, 'reference_id': c[5]}
+                    for c in c_files
+                ]
+            else:
+                item['quotation_files'] = []
+                item['cpo_files'] = []
+        except Exception as e:
+            logger.warning(f"Failed to fetch linked files for {item.get('ticket_number')}: {e}")
+            item['quotation_files'] = []
+            item['cpo_files'] = []
+
+        return item
+
     def get_extraction(self, gmail_id):
         try:
-            #   FIX: Added quotation_files and quotation_amount here too
-            cols = """
-                id, gmail_id, ticket_number, ticket_status, ticket_priority, 
-                quotation_files, quotation_amount,
-                sender, company_name, received_at, subject, body_text, internal_notes, activity_logs,
-                extraction_result, extraction_status, updated_at, created_at,assigned_to
-            """
+            # 1. Try LOCAL first
+            item = self._fetch_single_extraction(gmail_id, self.connection)
+            if item:
+                return item
 
+            # 2. Fallback to CLOUD (MotherDuck) for historical tickets
+            if self.cloud_connection:
+                try:
+                    item = self._fetch_single_extraction(gmail_id, self.cloud_connection)
+                    if item:
+                        logger.info(f"Ticket {gmail_id} found in MotherDuck cloud (not in local cache)")
+                        return item
+                except Exception as cloud_err:
+                    logger.warning(f"Cloud lookup failed for {gmail_id}: {cloud_err}")
 
-            result = self.connection.execute(
-                f"SELECT {cols} FROM email_extractions WHERE gmail_id = ?", 
-                [gmail_id]
-            ).fetchone()
-            
-            if not result: return None
-            
-            col_names = [c.strip() for c in cols.split(',')]
-            item = dict(zip(col_names, result))
-            
-            # Parse JSON fields safely
-            for field in ['extraction_result', 'internal_notes', 'activity_logs']:
-                if isinstance(item.get(field), str):
-                    try:
-                        item[field] = json.loads(item[field])
-                    except:
-                        item[field] = [] if field in ['internal_notes', 'activity_logs'] else {}
-            
-            # --- Fetch Normalized Files ---
-            try:
-                ticket_number = item.get('ticket_number')
-                if ticket_number:
-                    # Fetch Quotations
-                    q_files = self.connection.execute("""
-                        SELECT id, file_name, file_url, amount, uploaded_at, reference_id 
-                        FROM quotations WHERE ticket_number = ?
-                    """, [ticket_number]).fetchall()
-                    item['quotation_files'] = [
-                        {'id': q[0], 'name': q[1], 'url': q[2], 'amount': q[3], 'uploaded_at': q[4].isoformat() if q[4] else None, 'reference_id': q[5]}
-                        for q in q_files
-                    ]
-
-                    # Fetch CPO Files
-                    c_files = self.connection.execute("""
-                        SELECT id, file_name, file_url, amount, uploaded_at, reference_id 
-                        FROM cpo_orders WHERE ticket_number = ?
-                    """, [ticket_number]).fetchall()
-                    item['cpo_files'] = [
-                        {'id': c[0], 'name': c[1], 'url': c[2], 'amount': c[3], 'uploaded_at': c[4].isoformat() if c[4] else None, 'reference_id': c[5]}
-                        for c in c_files
-                    ]
-                else:
-                    item['quotation_files'] = []
-                    item['cpo_files'] = []
-            except Exception as e:
-                    logger.warning(f"Failed to fetch linked files for {ticket_number}: {e}")
-                    item['quotation_files'] = []
-                    item['cpo_files'] = []
-
-            return item
+            return None
         except Exception as e:
             logger.error(f"Error getting extraction: {str(e)}")
             return None

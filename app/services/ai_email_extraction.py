@@ -15,7 +15,9 @@ def normalize_input(text: str) -> str:
     Normalize OCR / email text for better extraction
     """
     text = text.replace("|", "\n")
-    text = text.replace(",", "\n")
+    # Replace commas with newlines ONLY if they are not surrounded by digits.
+    # This preserves numbers like "1,000" while still splitting comma-separated items.
+    text = re.sub(r',(?!\d)|(?<!\d),', '\n', text)
     text = re.sub(r"\n+", "\n", text)
     return text.strip()
 
@@ -159,6 +161,21 @@ CRITICAL EXTRACTION RULES (VERY IMPORTANT)
   - unit price
 - If any field is missing, return an empty string ""
 
+━━━━━━━━━━━━━━━━━━━━━━
+MULTI-SOURCE EXTRACTION (VERY IMPORTANT)
+━━━━━━━━━━━━━━━━━━━━━━
+
+The input contains MULTIPLE sections:
+  - "EMAIL BODY" — items mentioned in the email text
+  - "ATTACHMENT 1", "ATTACHMENT 2", etc. — items from attached files (PDF, Excel, images)
+
+YOU MUST:
+1. Read and extract items from EVERY section (body AND all attachments)
+2. Combine ALL items from ALL sources into ONE unified Requirements list
+3. NEVER skip items just because they appear in an attachment rather than the body
+4. If the body says "please find attached list" with 2 items, and the attachment has 20 items, you MUST include all 22 items
+5. If the same item appears in both body and attachment, include it ONCE (deduplicate)
+6. Attachment content may be in table/markdown format — extract each row as a separate item
 
 
 
