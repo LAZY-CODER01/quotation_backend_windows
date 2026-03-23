@@ -97,7 +97,7 @@ def start_company_gmail_monitoring():
     db.disconnect()
 
     if not token_json:
-        print("⚠️ Company Gmail not connected yet")
+        print("[WARNING] Company Gmail not connected yet")
         return
 
     gmail = GmailService(credentials_path=Config.GMAIL_CREDENTIALS_FILE)
