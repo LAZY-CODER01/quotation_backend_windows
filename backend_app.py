@@ -241,8 +241,11 @@ def create_flask_app():
         # or just rely on Admin role protection.
         state = "company_connect_state" 
         
+        # Accept dynamic redirect URI from frontend, fallback to config
+        redirect_uri = request.args.get('redirect_uri', Config.OAUTH_REDIRECT_URI)
+        
         auth_url = service.get_authorization_url(
-            redirect_uri=Config.OAUTH_REDIRECT_URI,
+            redirect_uri=redirect_uri,
             state=state
         )
         
@@ -255,6 +258,7 @@ def create_flask_app():
         # 1. Read 'code' and 'error' from query params
         code = request.args.get("code")
         error = request.args.get("error")
+        redirect_uri = request.args.get("redirect_uri", Config.OAUTH_REDIRECT_URI)
         
         if error:
             return jsonify({"error": f"OAuth error: {error}"}), 400
@@ -268,7 +272,7 @@ def create_flask_app():
             # This method saves the token to DB (id=1) 
             success = service.exchange_and_save_company_token(
                 code=code, 
-                redirect_uri=Config.OAUTH_REDIRECT_URI
+                redirect_uri=redirect_uri
             )
             
             if success:
@@ -300,7 +304,7 @@ def create_flask_app():
             # Remove token from DB
             db = DuckDBService()
             if db.connect():
-                db.delete_user_token(Config.COMPANY_GMAIL_ID)
+                db.delete_company_token()
                 db.disconnect()
                 
             return jsonify({"success": True, "message": "Disconnected Company Gmail"})
