@@ -1,6 +1,6 @@
 """
 Word document processing utility for SnapQuote.
-
+//
 Converts Word document content to markdown format.
 """
 
