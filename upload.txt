@@ -3,7 +3,7 @@ git add .
 git commit -m "backend change"
 git push
 az acr login --name quotesnapacr
-//
+
 # 2. Build & push image
 TAG=$(date +%s)
 docker buildx build --platform linux/amd64 \
